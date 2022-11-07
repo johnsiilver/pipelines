@@ -1,12 +1,8 @@
 // Package queue provides a simple queue primative that blocks on Pop() until an
 // entry is available and can block on Push() when a size limit is applied.
-// This is not a lockfree implementation. If this becomes a performance blocker
-// (which I doubt), we could implement something like:
-// https://github.com/antigloss/go/blob/master/container/concurrent/queue/lockfree_queue.go
 package queue
 
 import (
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -27,7 +23,7 @@ func New[A any](size int) *Queue[A] {
 	if size > 0 {
 		limit = make(chan struct{}, size)
 	}
-	return &Queue[A]{limit: limit, queue: &simple[A]{}}
+	return &Queue[A]{limit: limit, queue: newSimple[A]()}
 }
 
 // Push adds an entry to the queue.
@@ -56,7 +52,7 @@ func (q *Queue[A]) Pop() (val A, ok bool) {
 			default:
 				// Normally when you have a limiter, you don't need a select{}, its
 				// 1 for 1. In this case a Pop() can be called when Close() has been called.
-				// If you don't the default, this blocks forever.
+				// If you don't have a default, this blocks forever.
 			}
 		}
 	}()
@@ -80,6 +76,58 @@ func (q *Queue[A]) Pop() (val A, ok bool) {
 	}
 }
 
+// simple is a simple lock free queue using 1.19's atomic.Pointer.
+type simple[A any] struct {
+	head  atomic.Pointer[node[A]]
+	tail  atomic.Pointer[node[A]]
+	dummy node[A]
+}
+
+func newSimple[A any]() *simple[A] {
+	var s simple[A]
+	s.head.Store(&s.dummy)
+	s.tail.Store(s.head.Load())
+	return &s
+}
+
+func (s *simple[A]) pop() (A, bool) {
+	for {
+		h := s.head.Load()
+		n := h.next.Load()
+		if n != nil {
+			if s.head.CompareAndSwap(h, n) {
+				return n.val, true
+			} else {
+				continue
+			}
+		} else {
+			var v A
+			return v, false
+		}
+	}
+}
+
+func (s *simple[A]) push(val A) {
+	n := &node[A]{val: val}
+	for {
+		rt := s.tail.Load()
+
+		if rt.next.CompareAndSwap(nil, n) {
+			s.tail.Store(n)
+			return
+		} else {
+			continue
+		}
+	}
+}
+
+type node[A any] struct {
+	val  A
+	next atomic.Pointer[node[A]]
+}
+
+// Keeping the old version around in case I run into any problems.
+/*
 // simple provides a simple queue mechanism. This one doesn't block or have a size limit.
 // Our Queue uses this underneath and adds the other mechanisms on top of this.
 type simple[A any] struct {
@@ -106,3 +154,4 @@ func (s *simple[A]) push(a A) {
 
 	s.data = append(s.data, a)
 }
+*/
