@@ -24,15 +24,6 @@ StateMachine[R Request] constraint.
 You receive your Request objects once they have processed via the channel returned by
 the Pipelines.Out() method.
 
-Here is an example of setting up everything needed to execute a pipeline. This pipeline
-recevies Requests that have a Record attached with a person's first name, last name and an
-id. The pipeline attaches an error to any Request that doesn't have those filled in.
-
-It then will bulk up 1000 entries and send them to an identity service that will return
-the person's birthdate and birth place information. If not available, we add an error to
-the Request. All Record objects in this example belong to a RecordSet. Request objects
-representing multiple RecordSet(s) can be processed at the same time.
-
 Setup example:
 
 	// see testing/client.Record for this.
@@ -203,8 +194,8 @@ To run the pipeline above is simple:
 
 Above we use .Close() mechanics, but that isn't strictly necessary. It is possible
 to construct a Pipeline's that can multiplex information from multiple sources and
-those can be routed back to their origin. It is all about what information is included
-in the Request.
+those can be routed back to their origin and never needs to be closed.
+It is all about what information is included in the Request.
 
 A more complicated setup that handles pipelines doing bulk requests to services
 and that deals with []Request that need to know when all Request objects have exited the
