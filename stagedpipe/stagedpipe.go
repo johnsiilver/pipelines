@@ -483,7 +483,12 @@ func newPipeline[R Request](args pipelineArgs[R]) (*pipeline[R], error) {
 // Submit submits a DBD for processing.
 func (p *pipeline[R]) runner() {
 	go p.waitForPromises()
-	defer p.promiseQueue.Close()
+	defer func() {
+		// Wait for all work to be done.
+		p.pipelinesWG.Wait()
+		// Close the queue.
+		p.promiseQueue.Close()
+	}()
 
 	wg := sync.WaitGroup{}
 	for r := range p.in {
