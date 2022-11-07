@@ -1,0 +1,32 @@
+type Request struct {
+}
+
+// Pre implements stagedpipe.Request.Pre().
+func (r Request) Pre() error {
+
+}
+
+// Post implements stagedpipe.Request.Post().
+func (r Request) Post() error {
+
+}
+
+// HasWaiters implements stagedpipe.Request.HasWaiters().
+func (r Request) HasWaiters() bool {
+
+}
+
+// Wait implements stagedpipe.Request.Wait().
+func (r Request) Wait() {
+
+}
+
+// Error implements stagedpipe.Request.Error().
+func (r Request) Error() error {
+
+}
+
+// SetError implements stagedpipe.Request.SetError().
+func (r *Request) SetError(e error) {
+
+}
