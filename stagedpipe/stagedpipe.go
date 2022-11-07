@@ -54,7 +54,7 @@ Setup example:
 
 	// HasWaiters implements stagedpipe.Request.HasWaiters().
 	func (r Request) HasWaiters() bool {
-		return false
+		return true
 	}
 
 	// Wait implements stagedpipe.Request.Wait().
