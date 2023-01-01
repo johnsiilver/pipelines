@@ -12,68 +12,85 @@ You can ignore how the parser works he is implementing.
 
 You can see basic Go pipelining here: https://www.youtube.com/watch?v=oV9rvDllKEg .
 
-Every pipeline will receive a Request, which is a generic type you define that must
-implement our Request constraint.
+Every pipeline will receive a Request, which is an interface type that must
+implement our Request interface. Each Request is designed to be stack allocateable, meaning
+it should not be implemented with a pointer. All relevant methods return a Request object
+on any change that can be passed through the next states.
 
-Requests enter to the Pipelines via the Pipelines.Submit() method. That method routes
-your Request to concurrent StateMachine objects.
+You define StateMachine objects that satisfy the StateMachine interface. These states
+represent the stages of the pipeline. A single StateMachine will process a single
+Request at a time, allowing use of your StateMachine's internal objects without mutexes.
+All StateMachine methods that implement a Stage MUST BE PUBLIC.
 
-StateMachine objects are a generic type you define that satisfies our
-StateMachine[R Request] constraint.
+A RequestGroup represents a set of related Request(s) that should be processed together.
+A new RequestGroup can be created with Pipelines.NewRequestGroup().
 
-You receive your Request objects once they have processed via the channel returned by
-the Pipelines.Out() method.
+Requests enter the Pipelines via the RequestGroup.Submit() method. Requests are received
+with RequestGroup.Out(), which returns a channel of Request(s).
+
+Multiple RequestGroup(s) can send into the Pipelines for processing, as everything is
+muxed into the Pipelines and demuxed out to the RequestGroup.Out() channel.
 
 Setup example:
 
-	// see testing/client.Record for this.
+	// This would be in package client.  This is here for clarity
 	type Record struct {
-		...
+		// see testing/client.Record for the all the attributes.
 	}
 
 	// Request implements stagedpipe.Request.
 	type Request struct {
+		id uint64
+
 		// rec is the Record for this Request that will be processed.
-		rec *client.Record
+		rec client.Record
 
 		// err holds an error if processing the Request had a problem.
 		err error
 
-		wg *sync.WaitGroup
+		next stagepipe.
 	}
 
 	// Pre implements stagedpipe.Request.Pre().
-	func (r Request) Pre() {
-		r.wg.Add(1)
-	}
+	func (r Request) Pre() {}
 
 	// Post implements stagedpipe.Request.Post().
-	func (r Request) Post() {
-		r.wg.Done()
-	}
-
-	// HasWaiters implements stagedpipe.Request.HasWaiters().
-	func (r Request) HasWaiters() bool {
-		return true
-	}
-
-	// Wait implements stagedpipe.Request.Wait().
-	func (r Request) Wait() {}
+	func (r Request) Post() {}
 
 	// Error implements stagedpipe.Request.Error().
 	func (r Request) Error() error {
 		return r.err
 	}
 
-	// SetError implements stagedpipe.Request.SetError().
+	// SetError implements stagedpipe.Request.SetError(). I also use this
+	// to set the r.next to nil, meaning it will exit the pipeline, as I don't
+	// want any processing after an error.
 	func (r Request) SetError(e error) stagedpipe.Request {
 		r.err = e
+		r.next = nil
 		return r
 	}
 
+	func (r Request) Next() statepipe.Stage {
+		return r.next
+	}
+
+	func (r Request) SetNext(n statepipe.Stage) Request {
+		r.next = n
+		return r
+	}
+
+	func (r Request) GroupNum() uint64 {
+		return r.id
+	}
+
+	func (r Request) SetGroupNum(u uint64) stagedpipe.Request {
+		r.id = u
+	}
+
 	// ToConcrete converts a statepipe.Request to our concrete Request object.
-	func ToConcrete[R stagedpipe.Request](r R) (Request, error) {
-		x, ok := any(r).(Request)
+	func ToConcrete(r stagedpipe.Request) (Request, error) {
+		x, ok := r.(Request)
 		if !ok {
 			return Request{}, fmt.Errorf("unexpected type %T, expecting Request", r)
 		}
@@ -81,7 +98,7 @@ Setup example:
 	}
 
 	// MustConcrete is the same as ToConcrete except an error causes a panic.
-	func MustConcrete[R stagedpipe.Request](r R) Request {
+	func MustConcrete(r stagedpipe.Request) Request {
 		x, err := ToConcrete(r)
 		if err != nil {
 			panic(err)
@@ -90,22 +107,22 @@ Setup example:
 	}
 
 	// SM implements stagedpipe.StateMachine.
-	type SM[R stagedpipe.Request] struct {
+	type SM struct {
 		// idClient is a client for querying for information based on an ID.
 		idClient *client.ID
 	}
 
 	// NewSM creates a new stagepipe.StateMachine.
-	func NewSM[R stagedpipe.Request](client *client.ID) *SM[R] {
-		return &SM[R]{idClient:   client,}
+	func NewSM(client *client.ID) *SM {
+		return &SM{idClient:   client,}
 	}
 
 	// Start implements stagedpipe.StateMachine.Start().
-	func (s *SM[R]) Start(ctx context.Context, req R) stagedpipe.Stage[R] {
+	func (s *SM) Start(ctx context.Context, req stagedpipe.Request) stagedpipe.Request {
 		x, err := ToConcrete(req)
 		if err != nil {
 			req.SetError(fmt.Errorf("unexpected type %T, expecting Request", req))
-			return nil
+			return req
 		}
 
 		x.rec.First = strings.TrimSpace(x.rec.First)
@@ -114,45 +131,42 @@ Setup example:
 
 		switch {
 		case x.rec.First == "":
-			x.SetError(fmt.Errorf("Record.First cannot be empty"))
-			return nil
+			return x.SetError(fmt.Errorf("Record.First cannot be empty"))
 		case x.rec.Last == "":
-			x.SetError(fmt.Errorf("Record.Last cannot be empty"))
-			return nil
+			return x.SetError(fmt.Errorf("Record.Last cannot be empty"))
 		case x.rec.ID == "":
-			x.SetError(fmt.Errorf("Record.ID cannot be <= 0"))
-			return nil
+			return x.SetError(fmt.Errorf("Record.ID cannot be <= 0"))
 		}
 
-		return s.IdVerifier
+		x.SetNext(s.IdVerifier)
+		return x
 	}
 
 	// IdVerifier takes a Request and adds it to a bulk request to be sent to the
 	// identity service. This is the last stage of this pipeline.
-	func (s *SM[R]) IdVerifier(ctx context.Context, req R) stagedpipe.Stage[R] {
+	func (s *SM) IdVerifier(ctx context.Context, req Request) stagedpipe.Stage[R] {
 		x := MustConcrete(req)
 
 		idRec, err := s.idClient.Call(ctx, x.rec.ID)
 		if err != nil {
-			x.SetError(err)
+			return x.SetError(err)
 		}
 		// I could do some more data verification, but this is getting long in the tooth.
-		rec.Birth = idRec.Birth
-		rec.BirthTown = idRec.BirthTown
-		rec.BirthState = idRec.BirthState
+		x.Birth = idRec.Birth
+		x.BirthTown = idRec.BirthTown
+		x.BirthState = idRec.BirthState
 
-		return nil
+		x.SetNext(nil)
+		return x
 	}
 
 Above is a pipeline that takes in requests that contain a user record, cleans up the
-record, and calls out to a identity service (faked) to get birth information. Any errors
-are recorded into the Request.rec. If we have an error contacting the service, it is
-recorded directly into the Request.
+record, and calls out to a identity service (faked) to get birth information.
 
 To run the pipeline above is simple:
 
 	client := &client.ID{} // The identity service client
-	sm := NewSM[Request](client) // The statemachine created above
+	sm := NewSM(client) // The statemachine created above
 
 	// Creates 100 pipelines that have concurrent processing for each stage of the
 	// pipeline defined in "sm".
@@ -161,60 +175,64 @@ To run the pipeline above is simple:
 		// Do something
 	}
 
+	// Make a new RequestGroup that I can send requests on.
+	g0 := p.NewRequestGroup()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Start processing output.
+	waitOut := wg.WaitGroup{}
+	waitOut.Add(1)
 	go func() {
-		for rec := range p.Out() {
+		defer waitOut.Done()
+		for rec := range g0.Out() {
 			if rec.Err != nil {
 				cancel()
-				p.Close()
-				p.Drain()
+				p.Close(true)
 				return
 			}
 			WriteToDB(rec)
 		}
 	}()
 
-	// Read all the data from some source,
-	wg := sync.WaitGroup{}
-
+	// Read all the data from some source and write it to the pipeline.
 	for _, rec := ReadDataFromSource() {
 		if ctx.Err() != nil {
 			break
 		}
-		r := Request{rec: rec, &wg}
-		p.Submit(ctx, rec)
+		if err := g0.Submit(ctx, Request{rec: rec}); err != nil {
+			cancel()
+			p.Close(true)
+			// do something like return or panic()
+		}
 	}
 	if ctx.Err() != nil {
-		p.Close()
+		p.Close(true)
 	}
+	g0.Close()
 
-	wg.Wait()
+	waitOut.Wait()
 
-Above we use .Close() mechanics, but that isn't strictly necessary. It is possible
-to construct a Pipeline's that can multiplex information from multiple sources and
-those can be routed back to their origin and never needs to be closed.
-It is all about what information is included in the Request.
+	// If this is the only use for the pipeline, then we can also call p.Close().
+	// But we could be using this with multiple RequestGroup(s) or this is
+	// processing for a server and in those cases we would not call p.Close().
 
-A more complicated setup that handles pipelines doing bulk requests to services
-and that deals with []Request that need to know when all Request objects have exited the
-pipelines: see the stagedpipe_test.go file. Note: this is not for the feint of heart,
-it will take some time to understand this.
-
-Pipelines is very flexible, allowing for all kinds of combinations for functionality.
+stagedpipe is very flexible, allowing for all kinds of combinations for functionality.
 */
 package stagedpipe
 
 import (
 	"context"
 	"fmt"
+	"log"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/johnsiilver/dynamics/demux"
 	"github.com/johnsiilver/dynamics/method"
-	"github.com/johnsiilver/pipelines/stagedpipe/internal/queue"
 	"github.com/johnsiilver/pools/goroutines/pooled"
 )
 
@@ -227,19 +245,20 @@ type Request interface {
 	// alter your data here.
 	// This should process fast to avoid latency on submitting a Request.
 	Pre()
+
 	// Post is a function that must run after the Request is processed and
 	// sent back on the channel returned by Pipelines.Out().Normally used to unlock
 	// a Mutex or decrease a WaitGroup representing a group of requests that are
 	// being processed.
 	Post()
 
-	// HasWaiters indicates if the Request has any promises. If so it exits
-	// the pipeline into a queue to wait for the promises to finish.
-	HasWaiters() bool
+	// GroupNum returns the Request's group number. This is used internally to route
+	// the Request out to the expected output channel.
+	GroupNum() uint64
 
-	// Wait is called on items in our exit queue to finish processing. This is
-	// only called if HasWaiters() returns true.
-	Wait()
+	// SetGroupNum set's the Request's gropu number. This is used internally to
+	// set which output channel to send the Request.
+	SetGroupNum(n uint64) Request
 
 	// Error returns an error for the request. This type of error is for unrecoverable
 	// or errors in processing, not errors for the data being processed. For example,
@@ -252,61 +271,71 @@ type Request interface {
 	// the error set. Depending on stage layout, this may need to have a Mutex or
 	// similar protection.
 	SetError(e error) Request
+
+	// Next returns the next stage to be executed.
+	Next() Stage
+
+	// SetNext sets the next stage to be executed.
+	SetNext(stage Stage) Request
 }
 
 // SetRequestsErr can be used to set a slice of Request objects to have the same error.
 func SetRequestsErr(reqs []Request, e error) {
 	for i, r := range reqs {
-		reqs[i] = r.SetError(e)
+		r.SetError(e)
+		reqs[i] = r
 	}
 }
 
-type request[R Request] struct {
+type request struct {
 	ctx context.Context
-	req R
+	req Request
 
 	queueTime, ingestTime time.Time
 }
 
 // StateMachine represents a state machine where the methods that implement Stage
 // are the States and execution starts with the Start() method.
-type StateMachine[R Request] interface {
+type StateMachine interface {
 	// Start is the starting Stage of the StateMachine.
-	Start(ctx context.Context, req R) Stage[R]
+	Start(ctx context.Context, req Request) Request
 	// Close stops the StateMachine.
 	Close()
 }
 
 // Stage represents a function that executes at a given state.
-type Stage[R Request] func(ctx context.Context, req R) Stage[R]
+type Stage func(ctx context.Context, req Request) Request
 
 // PreProcessor is called before each Stage. If error != nil, req.SetError() is called
 // and execution of the Request in the StateMachine stops.
-type PreProcesor[R Request] func(ctx context.Context, req R) error
+type PreProcesor func(ctx context.Context, req Request) error
 
 // Pipelines provides access to a set of Pipelines that processes DBD information.
-type Pipelines[R Request] struct {
-	in  chan request[R]
-	out chan R
+type Pipelines struct {
+	in  chan request
+	out chan Request
 
-	pipelines     []*pipeline[R]
-	preProcessors []PreProcesor[R]
-	sms           []StateMachine[R]
+	pipelines     []*pipeline
+	preProcessors []PreProcesor
+	sms           []StateMachine
 
 	wg *sync.WaitGroup
+
+	requestGroupNum atomic.Uint64
+	demux           *demux.Demux[uint64, Request]
 
 	stats *stats
 }
 
 // Option is an option for the New() constructor.
-type Option[R Request] func(p *Pipelines[R]) error
+type Option func(p *Pipelines) error
 
 // PreProcessors provides a set of functions that are called in order
 // at each stage in the StateMachine. This is used to do work that is common to
 // each stage instead of having to call the same code. Similar to http.HandleFunc
 // wrapping techniques.
-func PreProcessors[R Request](p ...PreProcesor[R]) Option[R] {
-	return func(pipelines *Pipelines[R]) error {
+func PreProcessors(p ...PreProcesor) Option {
+	return func(pipelines *Pipelines) error {
 		if pipelines.preProcessors != nil {
 			return fmt.Errorf("cannot call StagePreProcessors() more than once")
 		}
@@ -318,35 +347,49 @@ func PreProcessors[R Request](p ...PreProcesor[R]) Option[R] {
 // New creates a new Pipelines object with "num" pipelines running in parallel.
 // Each underlying pipeline runs concurrently for each stage. The first StateMachine.Start()
 // in the list is the starting place for executions
-func New[R Request](num int, sms []StateMachine[R], options ...Option[R]) (Pipelines[R], error) {
+func New(num int, sms []StateMachine, options ...Option) (*Pipelines, error) {
 	if num < 1 {
-		return Pipelines[R]{}, fmt.Errorf("num must be > 0")
+		return nil, fmt.Errorf("num must be > 0")
 	}
 	if len(sms) == 0 {
-		return Pipelines[R]{}, fmt.Errorf("must provide at least 1 StateMachine")
+		return nil, fmt.Errorf("must provide at least 1 StateMachine")
 	}
 
-	in := make(chan request[R], num)
-	out := make(chan R, num)
+	in := make(chan request, 1)
+	out := make(chan Request, 1)
 	stats := newStats()
 
-	p := Pipelines[R]{
+	d, err := demux.New(
+		out,
+		func(r Request) uint64 {
+			return r.GroupNum()
+		},
+		func(r Request, err error) {
+			log.Fatalf("bug: received %#+v and got demux error: %s", r, err)
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	p := &Pipelines{
 		in:    in,
 		out:   out,
 		wg:    &sync.WaitGroup{},
 		sms:   sms,
 		stats: stats,
+		demux: d,
 	}
 
 	for _, o := range options {
-		if err := o(&p); err != nil {
-			return Pipelines[R]{}, err
+		if err := o(p); err != nil {
+			return nil, err
 		}
 	}
 
-	pipelines := make([]*pipeline[R], 0, num)
+	pipelines := make([]*pipeline, 0, num)
 	for i := 0; i < num; i++ {
-		args := pipelineArgs[R]{
+		args := pipelineArgs{
 			pipelinesWG:   p.wg,
 			in:            in,
 			out:           out,
@@ -359,7 +402,7 @@ func New[R Request](num int, sms []StateMachine[R], options ...Option[R]) (Pipel
 		_, err := newPipeline(args)
 		if err != nil {
 			close(in)
-			return Pipelines[R]{}, err
+			return nil, err
 		}
 	}
 	p.pipelines = pipelines
@@ -369,7 +412,7 @@ func New[R Request](num int, sms []StateMachine[R], options ...Option[R]) (Pipel
 
 // Close closes the ingestion of the Pipeline. No further Submit calls should be made.
 // If called more than once Close will panic.
-func (p Pipelines[R]) Close() {
+func (p *Pipelines) Close() {
 	close(p.in)
 
 	go func() {
@@ -381,39 +424,99 @@ func (p Pipelines[R]) Close() {
 	}()
 }
 
-// Drain is used to drain the out channel in case of some error in processing.
-// This will only work if .Close() is called, otherwise this will block forever.
-func (p *Pipelines[R]) Drain() {
-	for range p.out {
-	}
+// RequestGroup provides in and out channels to send a group of related data into
+// the Pipelines and receive the processed data. This allows multiple callers to
+// multiplex onto the same Pipelines. A RequestGroup is created with Pipelines.NewRequestGroup().
+type RequestGroup struct {
+	// id is the ID of the RequestGroup.
+	id uint64
+	// out is the channel the demuxer will use to send us output.
+	out chan Request
+	// user is the channel that we give the user to receive output. We do a little
+	// processing between receiveing on "out" and sending to "user".
+	user chan Request
+	// wg is used to know when it is safe to close the output channel.
+	wg sync.WaitGroup
+	// p is the Pipelines object this RequestGroup is tied to.
+	p *Pipelines
 }
 
-// Submit submits a request to the processing Pipelines.
-func (p Pipelines[R]) Submit(ctx context.Context, req R) {
-	p.wg.Add(1)
+// Close signals that the input is done and will wait for all Request objects to
+// finish proceessing, then close the output channel. If drain is set, all requests currently still processing
+// will be dropped. This should only be done if you receive an error and no longer intend
+// on processing any output.
+func (r *RequestGroup) Close(drain bool) {
+	if drain {
+		go func() {
+			for range r.out {
+				r.wg.Done()
+			}
+		}()
+	}
+	r.wg.Wait()
+	r.p.demux.RemoveReceiver(r.id)
+}
 
-	r := request[R]{
+// Submit submits a new Request into the Pipelines.
+func (r *RequestGroup) Submit(ctx context.Context, req Request) error {
+	if req == nil {
+		return fmt.Errorf("Submit(): the Request cannot be nil")
+	}
+	// This let's the Pipelines object know it is receiving a new Request to process.
+	r.p.wg.Add(1)
+	// This tracks the request in the RequestGroup.
+	r.wg.Add(1)
+
+	ireq := request{
 		ctx:       ctx,
-		req:       req,
+		req:       req.SetGroupNum(r.id),
 		queueTime: time.Now(),
 	}
 
-	r.req.Pre()
-	p.in <- r
+	ireq.req.Pre()
+	r.p.in <- ireq
+	return nil
 }
 
-// Out returns a channel that you receive the processed Request on.
-func (p Pipelines[R]) Out() chan R {
-	return p.out
+// Out returns a channel to receive Request(s) that have been processed. It is
+// unsafe to close the output channel. Instead, use .Close() when all input has
+// been sent and the output channel will close once all data has been processed.
+// You MUST get all data from Out() until it closes, even if you run into an error.
+// Otherwise the pipelines become stuck.
+func (r *RequestGroup) Out() <-chan Request {
+	return r.user
+}
+
+// NewRequestGroup returns a RequestGroup that can be used to process requests
+// in this set of Pipelines.
+func (p *Pipelines) NewRequestGroup() *RequestGroup {
+	id := p.requestGroupNum.Add(1)
+	r := RequestGroup{
+		id:   id,
+		out:  make(chan Request, 1),
+		user: make(chan Request, 1),
+		p:    p,
+	}
+	p.demux.AddReceiver(id, r.out)
+
+	go func() {
+		defer close(r.user)
+		for req := range r.out {
+			r.wg.Done()
+			r.user <- req
+		}
+	}()
+
+	return &r
 }
 
 // Stats returns stats about all the running Pipelines.
-func (p Pipelines[R]) Stats() Stats {
+func (p *Pipelines) Stats() Stats {
 	return p.stats.toStats()
 }
 
 // pipeline processes DBD entries.
-type pipeline[R Request] struct {
+type pipeline struct {
 	pool *pooled.Pool
 
 	// pipelinesWG is a waitgroup shared between all pipeline instances so that
@@ -421,37 +524,31 @@ type pipeline[R Request] struct {
 	// two places, runner() and waitForPromises().
 	pipelinesWG *sync.WaitGroup
 
-	sms           []StateMachine[R]
-	preProcessors []PreProcesor[R]
-
-	// promiseQuee holds Request objects until all promises have been completed
-	// before pushing to the .out channel.
-	promiseQueue *queue.Queue[request[R]]
+	sms           []StateMachine
+	preProcessors []PreProcesor
 
 	stats *stats
 
-	in  chan request[R]
-	out chan R
+	in  chan request
+	out chan Request
 }
 
-type pipelineArgs[R Request] struct {
-	in            chan request[R]
-	out           chan R
+type pipelineArgs struct {
+	in            chan request
+	out           chan Request
 	num           int
-	qSize         int
 	pipelinesWG   *sync.WaitGroup
-	sms           []StateMachine[R]
-	preProcessors []PreProcesor[R]
+	sms           []StateMachine
+	preProcessors []PreProcesor
 	stats         *stats
 }
 
 // newPipeline creates a new Pipeline. A new Pipeline should be created for a new set of related
 // requests.
-func newPipeline[R Request](args pipelineArgs[R]) (*pipeline[R], error) {
-	p := &pipeline[R]{
+func newPipeline(args pipelineArgs) (*pipeline, error) {
+	p := &pipeline{
 		in:            args.in,
 		out:           args.out,
-		promiseQueue:  queue.New[request[R]](args.qSize),
 		preProcessors: args.preProcessors,
 		pipelinesWG:   args.pipelinesWG,
 		stats:         args.stats,
@@ -480,33 +577,27 @@ func newPipeline[R Request](args pipelineArgs[R]) (*pipeline[R], error) {
 	return p, nil
 }
 
-// Submit submits a DBD for processing.
-func (p *pipeline[R]) runner() {
-	go p.waitForPromises()
+// Submit submits a request for processing.
+func (p *pipeline) runner() {
 	defer func() {
 		// Wait for all work to be done.
 		p.pipelinesWG.Wait()
-		// Close the queue.
-		p.promiseQueue.Close()
 	}()
 
 	wg := sync.WaitGroup{}
 	for r := range p.in {
-		r := r
+		r := r // Escape: would need to use Generics again.
 
 		wg.Add(1)
 		p.pool.Submit(
 			r.ctx,
 			func(ctx context.Context) {
 				defer wg.Done()
+				defer p.calcExitStats(r)
 				r = p.processReq(r)
-				switch {
-				case r.req.HasWaiters():
-					p.promiseQueue.Push(r)
-				default:
-					p.out <- r.req
-					p.pipelinesWG.Done()
-				}
+
+				p.out <- r.req
+				p.pipelinesWG.Done()
 			},
 		)
 	}
@@ -515,77 +606,64 @@ func (p *pipeline[R]) runner() {
 }
 
 // processReq processes a single request through the pipeline.
-func (p *pipeline[R]) processReq(r request[R]) request[R] {
+func (p *pipeline) processReq(r request) request {
 	// Stat colllection.
 	r.ingestTime = time.Now()
 	queuedTime := time.Since(r.queueTime)
 
 	p.stats.running.Add(1)
-	setMin(p.stats.ingestStats.min, int64(queuedTime))
-	setMax(p.stats.ingestStats.max, int64(queuedTime))
+	setMin(&p.stats.ingestStats.min, int64(queuedTime))
+	setMax(&p.stats.ingestStats.max, int64(queuedTime))
 	p.stats.ingestStats.avgTotal.Add(int64(queuedTime))
 
-	// Loop through all our states starting with p.Clean until we
+	// Loop through all our states starting with p.sms[0].Start until we
 	// get either we receive a Context error or the nextStateFn == nil
 	// which indicates that the statemachine is done processing.
-	stateFn := p.sms[0].Start
+	stage := p.sms[0].Start
 	for {
 		// If the context has been cancelled, stop processing.
 		if r.ctx.Err() != nil {
-			r.req = any(r.req.SetError(r.ctx.Err())).(R)
+			x := r.req
+			x.SetError(r.ctx.Err())
+			r.req = x
 			return r
 		}
 
 		for _, pp := range p.preProcessors {
 			if err := pp(r.ctx, r.req); err != nil {
-				r.req = any(r.req.SetError(err)).(R)
+				x := r.req
+				x.SetError(r.ctx.Err())
+				r.req = x
 				return r
 			}
 		}
+		req := stage(r.ctx, r.req)
+		if req == nil {
+			panic("a Stage in your pipeline is broken, expected a stagepipe.Request, got nil")
+		}
+		r.req = req
+		stage = r.req.Next()
 
-		nextStateFn := stateFn(r.ctx, r.req)
-		if nextStateFn == nil {
+		if stage == nil {
 			return r
 		}
-		stateFn = nextStateFn
 	}
 }
 
 // calcExitStats calculates the final stats when a Request exits the Pipeline.
-func (p *pipeline[R]) calcExitStats(r request[R]) {
+func (p *pipeline) calcExitStats(r request) {
 	runTime := time.Since(r.ingestTime)
 
 	p.stats.running.Add(-1)
 	p.stats.completed.Add(1)
 
-	setMin(p.stats.min, int64(runTime))
-	setMax(p.stats.max, int64(runTime))
+	setMin(&p.stats.min, int64(runTime))
+	setMax(&p.stats.max, int64(runTime))
 	p.stats.avgTotal.Add(int64(runTime))
 }
 
-// waitForPromises() waits for all Request promises to finish and then sends
-// the results to the .out channel.
-func (p *pipeline[R]) waitForPromises() {
-	for {
-		r, ok := p.promiseQueue.Pop()
-		if !ok {
-			return
-		}
-
-		func() { // Simply here to force a defer.
-			defer p.pipelinesWG.Done()
-
-			r.req.Wait()
-
-			p.calcExitStats(r)
-			p.out <- r.req
-			r.req.Post()
-		}()
-	}
-}
-
-func numStages[R Request](sm StateMachine[R]) int {
-	var sig Stage[R]
+func numStages(sm StateMachine) int {
+	var sig Stage
 	count := 0
 	for range method.MatchesSignature(reflect.ValueOf(sm), reflect.ValueOf(sig)) {
 		count++

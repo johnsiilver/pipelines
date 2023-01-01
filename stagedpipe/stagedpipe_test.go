@@ -3,10 +3,10 @@ package stagedpipe_test
 import (
 	"context"
 	"fmt"
+	"log"
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -14,73 +14,32 @@ import (
 	"github.com/johnsiilver/pipelines/stagedpipe/testing/client"
 )
 
-// RecordSet is a set of records that belong together.
-type RecordSet struct {
-	Records []*client.Record
-
-	wg *sync.WaitGroup
-}
-
-// Wait waits for all records in a RecordSet to be processed.
-func (r RecordSet) Wait() {
-	r.wg.Wait()
-}
-
-// NewRequests returns a bunch of Request objects for all Record(s) in RecordSet.
-func (r RecordSet) NewRequests() []Request {
-	reqs := make([]Request, 0, len(r.Records))
-	for _, rec := range r.Records {
-		reqs = append(reqs, NewRequest(rec, r.wg))
-	}
-	return reqs
-}
-
 // Request represents our request object. You can find a blank one
 // to fill out in file "requestTemplate" located in this directory.
 type Request struct {
-	// rec is the Record for this Request that will be processed.
-	rec *client.Record
+	id uint64
+
+	recs []client.Record
 
 	// err holds an error if processing the Request had a problem.
 	err error
 
-	// recordSetWait is used to track this Record Request as part of
-	// a RecordSet. This allows the RecordSet.Wait() to wait till all
-	// records part of the group have finished processing.
-	recordSetWait *sync.WaitGroup
-
-	// idVerifierWait is used to wait on a bulk request for identification
-	// information from another service.
-	idVerifierWait *sync.WaitGroup
+	nextStage stagedpipe.Stage
 }
 
 // NewRequest creates a new Request.
-func NewRequest(rec *client.Record, recordSetWait *sync.WaitGroup) Request {
+func NewRequest(recs []client.Record) Request {
 	return Request{
-		rec:            rec,
-		recordSetWait:  recordSetWait,
-		idVerifierWait: &sync.WaitGroup{},
+		recs: recs,
 	}
 }
 
 // Pre implements stagedpipe.Request.Pre().
 func (r Request) Pre() {
-	r.recordSetWait.Add(1)
 }
 
 // Post implements stagedpipe.Request.Post().
 func (r Request) Post() {
-	r.recordSetWait.Done()
-}
-
-// HasWaiters implements stagedpipe.Request.HasWaiters().
-func (r Request) HasWaiters() bool {
-	return true
-}
-
-// Wait implements stagedpipe.Request.Wait().
-func (r Request) Wait() {
-	r.idVerifierWait.Wait()
 }
 
 // Error implements stagedpipe.Request.Error().
@@ -94,9 +53,29 @@ func (r Request) SetError(e error) stagedpipe.Request {
 	return r
 }
 
+// Next implements stagedpipe.Request.Next().
+func (r Request) Next() stagedpipe.Stage {
+	return r.nextStage
+}
+
+// Setnext implements stagedpipe.Request.SetNext().
+func (r Request) SetNext(stage stagedpipe.Stage) stagedpipe.Request {
+	r.nextStage = stage
+	return r
+}
+
+func (r Request) GroupNum() uint64 {
+	return r.id
+}
+
+func (r Request) SetGroupNum(id uint64) stagedpipe.Request {
+	r.id = id
+	return r
+}
+
 // ToConcrete converts a statepipe.Request to our concrete Request object.
-func ToConcrete[R stagedpipe.Request](r R) (Request, error) {
-	x, ok := any(r).(Request)
+func ToConcrete(r stagedpipe.Request) (Request, error) {
+	x, ok := r.(Request)
 	if !ok {
 		return Request{}, fmt.Errorf("unexpected type %T, expecting Request", r)
 	}
@@ -104,7 +83,7 @@ func ToConcrete[R stagedpipe.Request](r R) (Request, error) {
 }
 
 // MustConcrete is the same as ToConcrete expect an error causes a panic.
-func MustConcrete[R stagedpipe.Request](r R) Request {
+func MustConcrete(r stagedpipe.Request) Request {
 	x, err := ToConcrete(r)
 	if err != nil {
 		panic(err)
@@ -113,176 +92,90 @@ func MustConcrete[R stagedpipe.Request](r R) Request {
 }
 
 // SM implements stagedpipe.StateMachine.
-type SM[R stagedpipe.Request] struct {
+type SM struct {
 	// idClient is a client for querying for information based on an ID.
 	idClient *client.ID
-
-	bulk *stagedpipe.BulkHolder[Request]
-
-	closeOnce  sync.Once
-	closed     chan struct{}
-	bulkSendIn chan []Request
 }
 
 // NewSM creates a new stagepipe.StateMachine.
-func NewSM[R stagedpipe.Request](client *client.ID) *SM[R] {
-	sm := &SM[R]{
-		idClient:   client,
-		bulk:       stagedpipe.NewBulkHolder[Request](1000),
-		closed:     make(chan struct{}),
-		bulkSendIn: make(chan []Request, 1),
-		closeOnce:  sync.Once{},
+func NewSM(client *client.ID) *SM {
+	sm := &SM{
+		idClient: client,
 	}
-	go sm.bulkSender()
 	return sm
 }
 
 // Close stops all running goroutines. This is only safe after all entries have
 // been processed.
-func (s *SM[R]) Close() {
-	s.closeOnce.Do(func() { close(s.closed) })
-}
+func (s *SM) Close() {}
 
 // Start implements stagedpipe.StateMachine.Start().
-func (s *SM[R]) Start(ctx context.Context, req R) stagedpipe.Stage[R] {
+func (s *SM) Start(ctx context.Context, req stagedpipe.Request) stagedpipe.Request {
 	x, err := ToConcrete(req)
 	if err != nil {
-		req.SetError(fmt.Errorf("unexpected type %T, expecting Request", req))
-		return nil
+		return req.SetError(fmt.Errorf("unexpected type %T, expecting Request", req))
 	}
 
-	x.rec.First = strings.TrimSpace(x.rec.First)
-	x.rec.Last = strings.TrimSpace(x.rec.Last)
-	x.rec.ID = strings.TrimSpace(x.rec.ID)
+	// This trims any excess space off of some string attributes.
+	// Because "x" is not a pointer, x.recs are not pointers, I need
+	// to reassign the changed entry to x.recs[i] .
+	for i, rec := range x.recs {
+		rec.First = strings.TrimSpace(rec.First)
+		rec.Last = strings.TrimSpace(rec.Last)
+		rec.ID = strings.TrimSpace(rec.ID)
 
-	switch {
-	case x.rec.First == "":
-		x.SetError(fmt.Errorf("Record.First cannot be empty"))
-		return nil
-	case x.rec.Last == "":
-		x.SetError(fmt.Errorf("Record.Last cannot be empty"))
-		return nil
-	case x.rec.ID == "":
-		x.SetError(fmt.Errorf("Record.ID cannot be <= 0"))
-		return nil
+		switch {
+		case rec.First == "":
+			return req.SetError(fmt.Errorf("Record.First cannot be empty"))
+		case rec.Last == "":
+			return req.SetError(fmt.Errorf("Record.Last cannot be empty"))
+		case rec.ID == "":
+			return req.SetError(fmt.Errorf("Record.ID cannot be empty"))
+		}
+		x.recs[i] = rec
 	}
 
-	return s.IdVerifier
+	return req.SetNext(s.IdVerifier)
 }
 
 // IdVerifier takes a Request and adds it to a bulk request to be sent to the
 // identity service. This is the last stage of this pipeline.
-func (s *SM[R]) IdVerifier(ctx context.Context, req R) stagedpipe.Stage[R] {
+func (s *SM) IdVerifier(ctx context.Context, req stagedpipe.Request) stagedpipe.Request {
 	x := MustConcrete(req)
-	x.idVerifierWait.Add(1)
-	bulkReady := s.bulk.Add(x)
 
-	if bulkReady != nil {
-		go s.sendIDs(bulkReady)
-	}
-
-	return nil
-}
-
-// bulkSender sits in the background and calls sendIDs() if we have
-// 2 Milliseconds go by or we have 1000 entries.
-func (s *SM[R]) bulkSender() {
-	const tickerTime = 2 * time.Millisecond
-	t := time.NewTicker(tickerTime)
-	for {
-		t.Reset(tickerTime)
-		select {
-		// We have 1000 entries to process.
-		case reqs := <-s.bulkSendIn:
-			s.sendIDs(reqs)
-		// Close() was called.
-		case <-s.closed:
-			reqs := s.bulk.Get()
-			if len(reqs) > 0 {
-				s.sendIDs(reqs)
-			}
-			return
-		// Timer hit, so let's see if we have any bulk entries
-		// and if so, let's send them. This features allows us to
-		// use the pipeline without ever closing it so we send < 1000
-		// entries if we have reached the end of the data stream and
-		// let's us multi-plex multiple streams for processing.
-		case <-t.C:
-			reqs := s.bulk.Get()
-			if len(reqs) > 0 {
-				s.sendIDs(reqs)
-			}
-		}
-	}
-}
-
-// sendIDs sends a bulk query to the identity service and updates all the Request
-// objects.
-func (s *SM[R]) sendIDs(bulk []Request) {
-	defer func() {
-		for _, r := range bulk {
-			r.idVerifierWait.Done()
-		}
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
-	ids := make([]string, 0, len(bulk))
-	for _, r := range bulk {
-		ids = append(ids, r.rec.ID)
+	if err := s.idClient.Call(ctx, x.recs); err != nil {
+		return x.SetError(err)
 	}
 
-	idRecs, err := s.idClient.Bulk(ctx, ids)
-	if err != nil {
-		setRequestsErr(bulk, err)
-		return
-	}
-
-	if len(idRecs) != len(bulk) {
-		setRequestsErr(bulk, fmt.Errorf("idClient.Call() did not return expected results"))
-		return
-	}
-
-	for i := 0; i < len(idRecs); i++ {
-		id := idRecs[i]
-		rec := bulk[i].rec
-
-		if id.Err != nil {
-			if id.Err == client.ErrNotFound {
-				rec.Err = client.ErrNotFound
-				continue
-			}
-			bulk[i].SetError(err)
-			continue
-		}
-
-		// I could do some more data verification, but this is getting long in the tooth.
-		rec.Birth = id.Birth
-		rec.BirthTown = id.BirthTown
-		rec.BirthState = id.BirthState
-	}
+	return req.SetNext(nil)
 }
 
-// setRequestsErr can be used to set a slice of Request objects to have the same error.
-func setRequestsErr(reqs []Request, e error) {
-	for i, r := range reqs {
-		reqs[i] = r.SetError(e).(Request)
-	}
+type gen struct {
+	lastID int
 }
 
-func genRequests(n int) RecordSet {
-	rs := RecordSet{
-		Records: make([]*client.Record, 0, n),
-		wg:      &sync.WaitGroup{},
-	}
+func (g *gen) genRecord(n int) []client.Record {
+	recs := make([]client.Record, n)
 
 	for i := 0; i < n; i++ {
-		s := strconv.Itoa(i + 1)
+		s := strconv.Itoa(g.lastID + 1)
+		g.lastID++
 		rec := client.Record{First: s, Last: s, ID: s}
-		rs.Records = append(rs.Records, &rec)
+		recs[i] = rec
 	}
-	return rs
+	return recs
+}
+
+func (g *gen) genRequests(n int) []Request {
+	reqs := make([]Request, n)
+
+	for i := 0; i < n; i++ {
+		reqs[i] = NewRequest(g.genRecord(10))
+	}
+	return reqs
 }
 
 const day = 24 * time.Hour
@@ -290,64 +183,77 @@ const day = 24 * time.Hour
 func TestPipelines(t *testing.T) {
 	t.Parallel()
 
-	rs1 := genRequests(1)
-	rs1000 := genRequests(1000)
+	g := gen{}
+	rs1 := g.genRequests(1)
+	g = gen{}
+	rs1000 := g.genRequests(1000)
 
 	tests := []struct {
-		desc      string
-		recordSet RecordSet
-		fc        *client.ID
+		desc     string
+		requests []Request
 	}{
 		{
-			desc:      "1 entry only",
-			recordSet: rs1,
-			fc:        &client.ID{},
+			desc:     "1 entry only",
+			requests: rs1,
 		},
 
 		{
-			desc:      "1000 entries",
-			recordSet: rs1000,
-			fc:        &client.ID{},
+			desc:     "1000 entries",
+			requests: rs1000,
 		},
 	}
 
+	sm := NewSM(&client.ID{})
+	p, err := stagedpipe.New(10, []stagedpipe.StateMachine{sm})
+	if err != nil {
+		panic(err)
+	}
+	defer p.Close()
+
 	for _, test := range tests {
 		ctx := context.Background()
-		sm := NewSM[Request](test.fc)
-		p, err := stagedpipe.New(10, []stagedpipe.StateMachine[Request]{sm})
-		if err != nil {
-			panic(err)
-		}
-		defer p.Drain() // Must be after close.
-		defer p.Close()
+
+		g := p.NewRequestGroup()
+		expectedRecs := make([]bool, len(test.requests)*10)
 
 		go func() {
-			// For this exercise we need to drain the Out channel so things continue
-			// to process, but we can just wait for the RecordSet as a whole to finish
-			// instead of doing things with each Request.
-			for range p.Out() {
+			ch := g.Out()
+			tick := time.NewTicker(10 * time.Second)
+			for {
+				select {
+				case req, ok := <-ch:
+					if !ok {
+						return
+					}
+					for _, rec := range MustConcrete(req).recs {
+						id, _ := strconv.Atoi(rec.ID)
+						expectedRecs[id-1] = true
+						if rec.Birth.IsZero() {
+							log.Fatalf("TestPipeline(%s): requests are not being processed", test.desc)
+						}
+						wantBirth := time.Time{}.Add(time.Duration(id) * day)
+						if !rec.Birth.Equal(wantBirth) {
+							log.Fatalf("TestPipeline(%s): requests are not being processed correctly, ID %d gave Birthday of %v, want %v", test.desc, id, rec.Birth, wantBirth)
+						}
+					}
+				case <-tick.C:
+					log.Println("nothing came out after 10 seconds, pipeline is probably stuck")
+				}
+				tick.Reset(10 * time.Second)
 			}
 		}()
 
-		for _, req := range test.recordSet.NewRequests() {
-			p.Submit(ctx, req)
-		}
-
-		// Wait for all the Record in the RecordSet to finish processing.
-		test.recordSet.Wait()
-
-		for _, rec := range test.recordSet.Records {
-			if rec.Birth.IsZero() {
-				t.Fatalf("TestPipeline(%s): requests are not being processed", test.desc)
-			}
-			numID, err := strconv.Atoi(rec.ID)
-			if err != nil {
+		for _, req := range test.requests {
+			if err := g.Submit(ctx, req); err != nil {
 				panic(err)
 			}
+		}
+		// Wait for all the Record in the RecordSet to finish processing.
+		g.Close(false)
 
-			wantBirth := time.Time{}.Add(time.Duration(numID) * day)
-			if !rec.Birth.Equal(wantBirth) {
-				t.Fatalf("TestPipeline(%s): requests are not being processed correctly, ID %d gave Birthday of %v, want %v", test.desc, numID, rec.Birth, wantBirth)
+		for i := 0; i < len(expectedRecs); i++ {
+			if !expectedRecs[i] {
+				t.Errorf("TestPipelines(%s): an expected client.Record[%d] was not set", test.desc, i)
 			}
 		}
 	}
@@ -356,40 +262,31 @@ func TestPipelines(t *testing.T) {
 func BenchmarkPipeline(b *testing.B) {
 	b.ReportAllocs()
 
-	rs := genRequests(100000)
-	fc := &client.ID{}
-
+	gen := gen{}
+	reqs := gen.genRequests(100000)
 	ctx := context.Background()
-	sm := NewSM[Request](fc)
+	sm := NewSM(&client.ID{})
 
-	b.StopTimer()
-	func() {
-		p, err := stagedpipe.New(runtime.NumCPU(), []stagedpipe.StateMachine[Request]{sm})
-		if err != nil {
-			panic(err)
-		}
+	p, err := stagedpipe.New(runtime.NumCPU(), []stagedpipe.StateMachine{sm})
+	if err != nil {
+		panic(err)
+	}
 
-		defer func() {
-			p.Close()
-			p.Drain() // Must be after close.
-		}()
-
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		g := p.NewRequestGroup()
 		go func() {
 			// For this exercise we need to drain the Out channel so things continue
-			// to process, but we can just wait for the RecordSet as a whole to finish
-			// instead of doing things with each Request.
-			for range p.Out() {
+			// to process.
+			for range g.Out() {
 			}
 		}()
 
-		b.ResetTimer()
-		b.StartTimer()
-		for _, req := range rs.NewRequests() {
-			p.Submit(ctx, req)
+		for _, req := range reqs {
+			if err := g.Submit(ctx, req); err != nil {
+				panic(err)
+			}
 		}
-
-		// Wait for all the Record in the RecordSet to finish processing.
-		rs.Wait()
-		b.StopTimer()
-	}()
+		g.Close(false)
+	}
 }

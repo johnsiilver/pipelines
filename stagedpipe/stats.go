@@ -75,26 +75,26 @@ func (i *ingestStats) toIngestStats(completed int64) IngestStats {
 }
 
 // setMin will set current to v if v is smaller that current.
-func setMin(current atomic.Int64, v int64) {
+func setMin(current *atomic.Int64, v int64) {
 	for {
-		c := current.Load()
+		c := (*current).Load()
 		if v >= c {
 			return
 		}
-		if current.CompareAndSwap(c, v) {
+		if (*current).CompareAndSwap(c, v) {
 			return
 		}
 	}
 }
 
 // setMax will set current to v if v is bigger than current.
-func setMax(current atomic.Int64, v int64) {
+func setMax(current *atomic.Int64, v int64) {
 	for {
-		c := current.Load()
+		c := (*current).Load()
 		if v <= c {
 			return
 		}
-		if current.CompareAndSwap(c, v) {
+		if (*current).CompareAndSwap(c, v) {
 			return
 		}
 	}

@@ -39,8 +39,8 @@ type Record struct {
 
 // ID is a client to our fake identity service.
 type ID struct {
-	// callNum is the current call number.
-	callNum atomic.Int64
+	// itemNum is the current call number.
+	itemNum atomic.Int64
 	// v is the number current record number.
 	v atomic.Int64
 	// errAt indicates if this should error at specific call. errAt 1 will error
@@ -55,52 +55,34 @@ type ID struct {
 
 const day = 24 * time.Hour
 
-func (i *ID) Call(ctx context.Context, id string) (Record, error) {
+func (i *ID) Call(ctx context.Context, recs []Record) error {
 	if i.err != nil {
-		return Record{}, errors.New("error")
+		return errors.New("error")
 	}
-	if i.errAt == int(i.callNum.Add(1)) {
-		return Record{}, errors.New("error")
-	}
-
-	n := i.v.Add(1)
-	if i.notFoundAt == int(n) {
-		return Record{ID: id, Err: ErrNotFound}, nil
-	}
-	if id == "" {
-		return Record{Err: fmt.Errorf("empty ID field")}, nil
+	if i.errAt == int(i.itemNum.Add(1)) {
+		return errors.New("error")
 	}
 
-	idNum, err := strconv.Atoi(id)
-	if err != nil {
-		panic(err)
-	}
-
-	return Record{
-		First:      strconv.Itoa(int(n)),
-		Last:       strconv.Itoa(int(n)),
-		ID:         id,
-		Birth:      time.Time{}.Add(time.Duration(idNum) * day),
-		BirthTown:  "Nashville",
-		BirthState: "Tennessee",
-	}, nil
-}
-
-func (i *ID) Bulk(ctx context.Context, ids []string) ([]Record, error) {
-	if i.err != nil {
-		return nil, errors.New("error")
-	}
-	if i.errAt == int(i.callNum.Add(1)) {
-		return nil, errors.New("error")
-	}
-
-	recs := make([]Record, 0, len(ids))
-	for _, id := range ids {
-		rec, err := i.Call(ctx, id)
-		if err != nil {
-			return nil, err
+	for x, rec := range recs {
+		n := i.v.Add(1)
+		if i.notFoundAt == int(n) {
+			rec.Err = ErrNotFound
+			recs[x] = rec
+			continue
 		}
-		recs = append(recs, rec)
+		if rec.ID == "" {
+			rec.Err = fmt.Errorf("empty ID field")
+			recs[x] = rec
+			continue
+		}
+		idNum, err := strconv.Atoi(rec.ID)
+		if err != nil {
+			panic(err)
+		}
+		rec.Birth = time.Time{}.Add(time.Duration(idNum) * day)
+		rec.BirthTown = "Nashville"
+		rec.BirthState = "Tennessee"
+		recs[x] = rec
 	}
-	return recs, nil
+	return nil
 }
