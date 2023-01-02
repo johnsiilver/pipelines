@@ -162,9 +162,9 @@ To run the pipeline above is simple:
 	}
 	g.Close()
 
-	// If this is the only use for the pipeline, then we can also call p.Close().
-	// But we could be using this with multiple RequestGroup(s) or this is
-	// processing for a server and in those cases we would not call p.Close().
+If the above example is the only use for the pipeline, then we can also call p.Close().
+But if using this with multiple RequestGroup(s) or this is
+processing for a server, there is no need to call p.Close().
 */
 package stagedpipe
 
