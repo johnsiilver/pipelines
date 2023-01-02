@@ -30,7 +30,7 @@ with RequestGroup.Out(), which returns a channel of Request(s).
 Multiple RequestGroup(s) can send into the Pipelines for processing, as everything is
 muxed into the Pipelines and demuxed out to the RequestGroup.Out() channel.
 
-Here is an example (you can run it here: https://go.dev/play/p/LJKKDcl-c2M):
+Here is an example (you can run it here: https://go.dev/play/p/LJKKDcl-c2M:
 
 	// SM implements stagedpipe.StateMachine. It holds all our states for the pipeline.
 	type SM struct {
