@@ -27,7 +27,7 @@ func main() {
 
 	p, err := stagedpipe.New(
 		1000,
-		[]stagedpipe.StateMachine{sm},
+		[]stagedpipe.StateMachine[Data]{sm},
 	)
 	if err != nil {
 		panic(err)
@@ -81,7 +81,7 @@ func main() {
 	}()
 
 	//const _100Million = 100000000
-	const _1K = 1000
+	const _1K = 1000 // Which does 1000 * 1000(each Request has 1000 entries)
 	ctx := context.Background()
 
 	for i := 0; i < _1K; i++ {

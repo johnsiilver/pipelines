@@ -14,83 +14,6 @@ import (
 	"github.com/johnsiilver/pipelines/stagedpipe/testing/client"
 )
 
-// Request represents our request object. You can find a blank one
-// to fill out in file "requestTemplate" located in this directory.
-type Request struct {
-	id uint64
-
-	recs []client.Record
-
-	// err holds an error if processing the Request had a problem.
-	err error
-
-	nextStage stagedpipe.Stage
-}
-
-// NewRequest creates a new Request.
-func NewRequest(recs []client.Record) Request {
-	return Request{
-		recs: recs,
-	}
-}
-
-// Pre implements stagedpipe.Request.Pre().
-func (r Request) Pre() {
-}
-
-// Post implements stagedpipe.Request.Post().
-func (r Request) Post() {
-}
-
-// Error implements stagedpipe.Request.Error().
-func (r Request) Error() error {
-	return r.err
-}
-
-// SetError implements stagedpipe.Request.SetError().
-func (r Request) SetError(e error) stagedpipe.Request {
-	r.err = e
-	return r
-}
-
-// Next implements stagedpipe.Request.Next().
-func (r Request) Next() stagedpipe.Stage {
-	return r.nextStage
-}
-
-// Setnext implements stagedpipe.Request.SetNext().
-func (r Request) SetNext(stage stagedpipe.Stage) stagedpipe.Request {
-	r.nextStage = stage
-	return r
-}
-
-func (r Request) GroupNum() uint64 {
-	return r.id
-}
-
-func (r Request) SetGroupNum(id uint64) stagedpipe.Request {
-	r.id = id
-	return r
-}
-
-// ToConcrete converts a statepipe.Request to our concrete Request object.
-func ToConcrete(r stagedpipe.Request) (Request, error) {
-	x, ok := r.(Request)
-	if !ok {
-		return Request{}, fmt.Errorf("unexpected type %T, expecting Request", r)
-	}
-	return x, nil
-}
-
-// MustConcrete is the same as ToConcrete expect an error causes a panic.
-func MustConcrete(r stagedpipe.Request) Request {
-	x, err := ToConcrete(r)
-	if err != nil {
-		panic(err)
-	}
-	return x
-}
-
 // SM implements stagedpipe.StateMachine.
 type SM struct {
 	// idClient is a client for querying for information based on an ID.
@@ -98,9 +21,9 @@ type SM struct {
 }
 
 // NewSM creates a new stagepipe.StateMachine.
-func NewSM(client *client.ID) *SM {
+func NewSM(cli *client.ID) *SM {
 	sm := &SM{
-		idClient: client,
+		idClient: cli,
 	}
 	return sm
 }
@@ -110,47 +33,45 @@ func NewSM(client *client.ID) *SM {
 func (s *SM) Close() {}
 
 // Start implements stagedpipe.StateMachine.Start().
-func (s *SM) Start(ctx context.Context, req stagedpipe.Request) stagedpipe.Request {
-	x, err := ToConcrete(req)
-	if err != nil {
-		return req.SetError(fmt.Errorf("unexpected type %T, expecting Request", req))
-	}
-
+func (s *SM) Start(ctx context.Context, req stagedpipe.Request[[]client.Record]) stagedpipe.Request[[]client.Record] {
 	// This trims any excess space off of some string attributes.
 	// Because "x" is not a pointer, x.recs are not pointers, I need
 	// to reassign the changed entry to x.recs[i] .
-	for i, rec := range x.recs {
+	for i, rec := range req.Data {
 		rec.First = strings.TrimSpace(rec.First)
 		rec.Last = strings.TrimSpace(rec.Last)
 		rec.ID = strings.TrimSpace(rec.ID)
 
 		switch {
 		case rec.First == "":
-			return req.SetError(fmt.Errorf("Record.First cannot be empty"))
+			req.Err = fmt.Errorf("Record.First cannot be empty")
+			return req
 		case rec.Last == "":
-			return req.SetError(fmt.Errorf("Record.Last cannot be empty"))
+			req.Err = fmt.Errorf("Record.Last cannot be empty")
+			return req
 		case rec.ID == "":
-			return req.SetError(fmt.Errorf("Record.ID cannot be empty"))
+			req.Err = fmt.Errorf("Record.ID cannot be empty")
+			return req
 		}
-		x.recs[i] = rec
+		req.Data[i] = rec
 	}
 
-	return req.SetNext(s.IdVerifier)
+	req.Next = s.IdVerifier
+	return req
 }
 
 // IdVerifier takes a Request and adds it to a bulk request to be sent to the
 // identity service. This is the last stage of this pipeline.
-func (s *SM) IdVerifier(ctx context.Context, req stagedpipe.Request) stagedpipe.Request {
-	x := MustConcrete(req)
-
+func (s *SM) IdVerifier(ctx context.Context, req stagedpipe.Request[[]client.Record]) stagedpipe.Request[[]client.Record] {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
-	if err := s.idClient.Call(ctx, x.recs); err != nil {
-		return x.SetError(err)
+	if err := s.idClient.Call(ctx, req.Data); err != nil {
+		req.Err = err
+		return req
 	}
-
-	return req.SetNext(nil)
+	req.Next = nil
+	return req
 }
 
 type gen struct {
@@ -169,11 +90,12 @@ func (g *gen) genRecord(n int) []client.Record {
 	return recs
 }
 
-func (g *gen) genRequests(n int) []Request {
-	reqs := make([]Request, n)
+func (g *gen) genRequests(n int) []stagedpipe.Request[[]client.Record] {
+	reqs := make([]stagedpipe.Request[[]client.Record], n)
 
-	for i := 0; i < n; i++ {
-		reqs[i] = NewRequest(g.genRecord(10))
+	for i, req := range reqs {
+		req.Data = g.genRecord(10)
+		reqs[i] = req
 	}
 	return reqs
 }
@@ -190,7 +112,7 @@ func TestPipelines(t *testing.T) {
 
 	tests := []struct {
 		desc     string
-		requests []Request
+		requests []stagedpipe.Request[[]client.Record]
 	}{
 		{
 			desc:     "1 entry only",
@@ -204,7 +126,7 @@ func TestPipelines(t *testing.T) {
 	}
 
 	sm := NewSM(&client.ID{})
-	p, err := stagedpipe.New(10, []stagedpipe.StateMachine{sm})
+	p, err := stagedpipe.New(10, []stagedpipe.StateMachine[[]client.Record]{sm})
 	if err != nil {
 		panic(err)
 	}
@@ -225,7 +147,7 @@ func TestPipelines(t *testing.T) {
 					if !ok {
 						return
 					}
-					for _, rec := range MustConcrete(req).recs {
+					for _, rec := range req.Data {
 						id, _ := strconv.Atoi(rec.ID)
 						expectedRecs[id-1] = true
 						if rec.Birth.IsZero() {
@@ -267,7 +189,7 @@ func BenchmarkPipeline(b *testing.B) {
 	ctx := context.Background()
 	sm := NewSM(&client.ID{})
 
-	p, err := stagedpipe.New(runtime.NumCPU(), []stagedpipe.StateMachine{sm})
+	p, err := stagedpipe.New(runtime.NumCPU(), []stagedpipe.StateMachine[[]client.Record]{sm})
 	if err != nil {
 		panic(err)
 	}

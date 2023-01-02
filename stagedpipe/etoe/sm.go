@@ -2,19 +2,26 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
+	"log"
 
 	"github.com/google/uuid"
 	"github.com/johnsiilver/pipelines/stagedpipe"
 )
 
-type SM struct {
+type Data struct {
+	ID    string
+	Bytes [][]byte
+}
+
+type SM[T Data] struct {
 	idService *SendIDClient
 }
 
 // NewSM creates a new stagepipe.StateMachine.
-func NewSM() *SM {
-	sm := &SM{
+func NewSM() *SM[Data] {
+	sm := &SM[Data]{
 		idService: NewSendIDClient(),
 	}
 	return sm
@@ -22,34 +29,32 @@ func NewSM() *SM {
 
 // Close stops all running goroutines. This is only safe after all entries have
 // been processed.
-func (s *SM) Close() {}
+func (s *SM[T]) Close() {}
 
 // Start implements stagedpipe.StateMachine.Start().
-func (s *SM) Start(ctx context.Context, req stagedpipe.Request) stagedpipe.Request {
-	x, err := ToConcrete(req)
-	if err != nil {
-		return req.SetError(fmt.Errorf("unexpected type %T, expecting Request", req))
-	}
-
+func (s *SM[T]) Start(ctx context.Context, req stagedpipe.Request[Data]) stagedpipe.Request[Data] {
 	switch {
-	case len(x.data) == 0:
-		return req.SetError(fmt.Errorf("Request.Data cannot be empty"))
+	case len(req.Data.Bytes) == 0:
+		req.Err = fmt.Errorf("Request.Data cannot be empty")
+		return req
 	}
 
-	return req.SetNext(s.ProcID)
+	req.Next = s.ProcID
+	return req
 }
 
-func (s *SM) ProcID(ctx context.Context, req stagedpipe.Request) stagedpipe.Request {
-	x := MustConcrete(req)
-	x.procID = uuid.New().String()
+func (s *SM[T]) ProcID(ctx context.Context, req stagedpipe.Request[Data]) stagedpipe.Request[Data] {
+	req.Data.ID = uuid.New().String()
 
-	return req.SetNext(s.SendID)
+	req.Next = s.SendID
+	return req
 }
 
-func (s *SM) SendID(ctx context.Context, req stagedpipe.Request) stagedpipe.Request {
+func (s *SM[T]) SendID(ctx context.Context, req stagedpipe.Request[Data]) stagedpipe.Request[Data] {
 	s.idService.Send(req)
 
-	return req.SetNext(nil)
+	req.Next = nil
+	return req
 }
 
 type SendIDClient struct {
@@ -59,10 +64,9 @@ func NewSendIDClient() *SendIDClient {
 	return &SendIDClient{}
 }
 
-func (s *SendIDClient) Send(req stagedpipe.Request) {
-	x := MustConcrete(req)
+func (s *SendIDClient) Send(req stagedpipe.Request[Data]) {
 
-	for _, id := range x.data {
+	for _, id := range req.Data.Bytes {
 		reverse(id)
 	}
 }
@@ -71,4 +75,19 @@ func reverse(s []byte) {
 	for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
 		s[i], s[j] = s[j], s[i]
 	}
+}
+
+// NewRequest creates a new Request.
+func NewRequest() stagedpipe.Request[Data] {
+	data := make([][]byte, 0, 1000)
+	for i := 0; i < 1000; i++ {
+		b := make([]byte, 1024)
+		_, err := rand.Read(b)
+		if err != nil {
+			log.Fatalf("error while generating random bytes: %s", err)
+		}
+		data = append(data, b)
+	}
+
+	return stagedpipe.Request[Data]{Data: Data{Bytes: data}}
 }
