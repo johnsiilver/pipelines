@@ -1,0 +1,10 @@
+github.com/google/btree v1.1.2 h1:xf4v41cLI2Z6FxbKm+8Bu+m8ifhj15JuZ9sa0jZCMUU=
+github.com/google/btree v1.1.2/go.mod h1:qOPhT0dTNdNzV6Z/lhRX0YXUafgPLFUh+gZMl761Gm4=
+github.com/google/uuid v1.3.0 h1:t6JiXgmwXMjEs8VusXIJk2BXHsn+wx8BZdTaoZ5fu7I=
+github.com/google/uuid v1.3.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
+github.com/johnsiilver/dynamics v0.0.0-20230101203615-b9956702f6a2 h1:iFub7zcspX4v1y4xXX/pBruz+/xN0OzZXNYka5eF0X4=
+github.com/johnsiilver/dynamics v0.0.0-20230101203615-b9956702f6a2/go.mod h1:+OY01mmzaYvdL+pMNb8+zfNUvrSc6o3ii8NKQ+ummIs=
+github.com/johnsiilver/pools v0.0.0-20221216174331-e94bf08bc72b h1:sIZtQridmiITb9d2MvDGw9rQdPw6jmk05yqhaHPD89c=
+github.com/johnsiilver/pools v0.0.0-20221216174331-e94bf08bc72b/go.mod h1:osszhplWw692dfSpy5d8kQogHXD9SwjqFM+mOu8YCIo=
+golang.org/x/exp v0.0.0-20221217163422-3c43f8badb15 h1:5oN1Pz/eDhCpbMbLstvIPa0b/BEQo6g6nwV3pLjfM6w=
+golang.org/x/exp v0.0.0-20221217163422-3c43f8badb15/go.mod h1:CxIveKay+FTh1D0yPZemJVgC/95VzuuOLq5Qi4xnoYc=

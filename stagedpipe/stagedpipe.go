@@ -69,7 +69,9 @@ Setup example:
 	// Close implements stagedpipe.StateMachine. It shuts down resources in the
 	// StateMachine that are no longer needed. This is only safe after all entries
 	// have been processed.
-	func (s *SM[T]) Close() {// We don't need to do anything}
+	func (s *SM[T]) Close() {
+		// We don't need to do anything
+	}
 
 	// Start implements stagedpipe.StateMachine.Start().
 	func (s *SM[T]) Start(ctx context.Context, req stagedpipe.Request[T]) stagedpipe.Request[T] {
