@@ -30,94 +30,122 @@ with RequestGroup.Out(), which returns a channel of Request(s).
 Multiple RequestGroup(s) can send into the Pipelines for processing, as everything is
 muxed into the Pipelines and demuxed out to the RequestGroup.Out() channel.
 
-Setup example:
+Here is an example (you can run it here: https://go.dev/play/p/LJKKDcl-c2M):
 
-	type Record struct {
-		// First is the first name of the person.
-		First string
-		// Last is the last name of the person.
-		Last string
-		// ID is the ID
-		ID string
-
-		// Birth is the time the person was born.
-		Birth time.Time
-		// BirthTown is what town the person was born in.
-		BirthTown string
-		// State is the state the person was born in.
-		BirthState string
-
-		// Err is a data error on this Record.
-		Err error
-	}
-
-	// SM implements stagedpipe.StateMachine.
-	type SM[T []Record] struct {
+	// SM implements stagedpipe.StateMachine. It holds all our states for the pipeline.
+	type SM struct {
 		// idClient is a client for querying for information based on an ID.
 		idClient *client.ID
 	}
 
-
-	// NewSM creates a new stagepipe.StateMachine.
-	func NewSM(cli *client.ID) *SM[[]Record] {
-		sm := &SM[[]Record]{
+	// NewSM creates a new stagepipe.StateMachine from SM.
+	func NewSM(cli *client.ID) *SM {
+		sm := &SM{
 			idClient: cli,
 		}
 		return sm
 	}
 
-	// Close implements stagedpipe.StateMachine. It shuts down resources in the
+	// Close implements stagedpipe.StateMachine.Close(). It shuts down resources in the
 	// StateMachine that are no longer needed. This is only safe after all entries
 	// have been processed.
-	func (s *SM[T]) Close() {
+	func (s *SM) Close() {
 		// We don't need to do anything
 	}
 
-	// Start implements stagedpipe.StateMachine.Start().
-	func (s *SM[T]) Start(ctx context.Context, req stagedpipe.Request[T]) stagedpipe.Request[T] {
-		// This trims any excess space off of some string attributes.
+	// Start implements stagedpipe.StateMachine.Start(). It accepts a Request and does some fixes on the names and ID to remove spaces
+	// and then sends it on to the IDVerifier stage.
+	func (s *SM) Start(ctx context.Context, req stagedpipe.Request[[]client.Record]) stagedpipe.Request[[]client.Record] {
 		for i, rec := range req.Data {
+			// This trims any excess space off of some string attributes.
 			rec.First = strings.TrimSpace(rec.First)
 			rec.Last = strings.TrimSpace(rec.Last)
 			rec.ID = strings.TrimSpace(rec.ID)
 
 			switch {
 			case rec.First == "":
-				req.Error = fmt.Errorf("Record.First cannot be empty")
+				req.Err = fmt.Errorf("Record.First cannot be empty")
 				return req
 			case rec.Last == "":
-				req.Error = fmt.Errorf("Record.Last cannot be empty")
+				req.Err = fmt.Errorf("Record.Last cannot be empty")
 				return req
 			case rec.ID == "":
-				req.Error = fmt.Errorf("Record.ID cannot be empty")
+				req.Err = fmt.Errorf("Record.ID cannot be empty")
 				return req
 			}
-			// req.Data is []Record not []*Record, so we need to do a reassignment.
 			req.Data[i] = rec
 		}
 
-		req.Next = s.IdVerifier
+		req.Next = s.IdVerifier // Next Stage to go to.
 		return req
 	}
 
-	// IdVerifier takes a Request and adds it to a bulk request to be sent to the
+	// IdVerifier is a stage takes a Request and adds it to a request to be sent to the
 	// identity service. This is the last stage of this pipeline.
-	func (s *SM[T]) IdVerifier(ctx context.Context, req stagedpipe.Request[T]) stagedpipe.Request[T] {
+	func (s *SM) IdVerifier(ctx context.Context, req stagedpipe.Request[[]client.Record]) stagedpipe.Request[[]client.Record] {
 		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 
 		if err := s.idClient.Call(ctx, req.Data); err != nil {
-			req.Error = err
+			req.Err = err
 			return req
 		}
-		req.Next = nil
+		req.Next = nil // Signifies there are no more stages.
 		return req
+	}
+
+	// RunPipline creates and starts 10 Pipelines using our StateMachine "SM" defined above.
+	func RunPipeline() (*stagedpipe.Pipelines[[]client.Record], error) {
+		sm := NewSM(&client.ID{})
+		// Creates 10 pipelines that have concurrent processing for each stage of the
+		// pipeline defined in "sm".
+		return stagedpipe.New(10, stagedpipe.StateMachine[[]client.Record](sm))
 	}
 
 Above is a pipeline that takes in requests that contain a user record, cleans up the
 record, and calls out to a identity service (faked) to get birth information.
 
 To run the pipeline above is simple:
+
+	func main() {
+		// Setup our pipelines.
+		p, err := RunPipeline()
+		if err != nil {
+			panic(err)
+		}
+		defer p.Close()
+
+		// Make a new RequestGroup that to send requests on.
+		g := p.NewRequestGroup()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Start processing output that will be read in and write it to our Database(faked).
+		go func() {
+			for req := range g.Out() {
+				if req.Err != nil {
+					cancel()
+					g.Close(true)
+					return
+				}
+				WriteToDB(req.Data)
+			}
+		}()
+
+		// Read all the data from some source and send it into the pipeline.
+		for recs := range ReadDataFromSource() {
+			if ctx.Err() != nil {
+				break
+			}
+			if err := g.Submit(ctx, stagedpipe.Request[[]client.Record]{Data: recs}); err != nil {
+				cancel()
+				g.Close(true)
+				panic(err)
+			}
+		}
+		g.Close(false)
+	}
 
 	sm := NewSM(&client.ID{})
 	// Creates 10 pipelines that have concurrent processing for each stage of the
@@ -163,8 +191,8 @@ To run the pipeline above is simple:
 	g.Close()
 
 If the above example is the only use for the pipeline, then we can also call p.Close().
-But if using this with multiple RequestGroup(s) or this is
-processing for a server, there is no need to call p.Close().
+But if using this with multiple RequestGroup(s) or this is processing for a server,
+there is no need to call p.Close().
 */
 package stagedpipe
 
