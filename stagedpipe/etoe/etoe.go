@@ -27,7 +27,7 @@ func main() {
 
 	p, err := stagedpipe.New(
 		1000,
-		[]stagedpipe.StateMachine[Data]{sm},
+		stagedpipe.StateMachine[Data](sm),
 	)
 	if err != nil {
 		panic(err)

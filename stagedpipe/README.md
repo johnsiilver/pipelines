@@ -13,7 +13,7 @@ in ->->                                            ->-> out
         -> stage0 -> stage1 -> stage2 -> stage3 -> 
 ```
 
-## The Problem
+## The First Problem
 
 In simple pipelines with few stages, this is pretty easy. In complex pipelines, you end up with a bunch of channels and go routines. When you add to the pipeline after you haven't looked at the code in a few months, you forget to call `make(chan X)` in your constructor, which causes a deadlock. You fix that, but you forgot to call `go p.stage()`, which caused another deadlock. You have lots of ugly channels and the code is brittle.
 
@@ -21,13 +21,17 @@ You try to deal with that by making each stage its own file with its own `struct
 
 That works, but it lacks the beauty of just scrolling from stage to state in a single file.
 
-## The Other Problem
+## The Second Problem
 
-Pipelines are great when you want to stream either single entries or bulk entries that will be processed at each stage immediately.
+The standard type of pipelining also works great in two scenarios:
+* Everything that goes through the Pipeline is related
+* Each request in the Pipeline is a promise that responds to a single request
 
-But what if it makes sense to stream individual entries, but at certain times bulk up data in the entries to send to a service that wants bulk requests?  I mean bulk network requests are faster than individual requests for the most part by several multiples.
+In the first scenario, no matter how many things enter the pipeline, you know know they are all related to a single call. When input ends, you shut down the input channel and the output channel shuts down when a `sync.WaitGroup` says all pipelines are done.
 
-Well in the standard processing model, this breaks down because you can't stop the pipeline or you have to make huge channels at different points that keep things from blocking.
+In the second scenario, you can keep open the pipeline for the life of the program as requests come in. Each request is a promise, which once it comes out the exit channel is sent on the included promise channel. This is costly because you have to create a channel for every request, but it also keeps open the pipelines for future use.
+
+But what if you want to keep your pipelines running and have multiple ingress streams that each need to be routed to their individual output streams?  The pipeline models above break down, either requiring each stream to have its own pipelines (which wastes resources), bulk requests that eat a lot of memory, or other unsavory methods.
 
 ## This Solution
 
@@ -53,8 +57,6 @@ in ->->               ->-> out
 
 You can than concurrently run multiple pipelines. This differs from the standard model in that a full pipeline might not have all stages running, but it will have the same number of stages running. Mathmatically, we still end up in a X * Y number of concurrent actions.
 
-Adding a stage simply requires adding a method that is `Public` and implements our `StateFn`.
+`Stage`s are constructed inside a type that implements our `StateMachine` interface. Any method on that object that is `Public` and implements `Stage` becomes a valid stage to be run. You pass the `StateMachine` to our `New()` constructor with the number of parallel pipelines (all running concurrently) that you wish to run. A good starting number is `runtime.NumCPU()`.
 
-In addition we add an output queue that sits between final stage and the `out` channel. This channel can have a size limit or not, depending on your needs. As items in the queue signal they have finished work, they are pushed out into the `out` channel. 
-
-This prevents having to size channels at each stage, though it does have some head of line blocking issues. I have not found this to be a problem.
+Accessing the pipeline for happens by creating a `RequestGroup`. You can simply stream values in and out of the pipeline separate from other `RequestGroup`s using the the `Submit()` method and `Out` channel.  

@@ -32,7 +32,6 @@ muxed into the Pipelines and demuxed out to the RequestGroup.Out() channel.
 
 Setup example:
 
-	// This would be in package client.  This is here for clarity
 	type Record struct {
 		// First is the first name of the person.
 		First string
@@ -53,24 +52,24 @@ Setup example:
 	}
 
 	// SM implements stagedpipe.StateMachine.
-	type SM[T []client.Record] struct {
+	type SM[T []Record] struct {
 		// idClient is a client for querying for information based on an ID.
 		idClient *client.ID
 	}
 
 
 	// NewSM creates a new stagepipe.StateMachine.
-	func NewSM(cli *client.ID) *SM[[]client.Record] {
-		sm := &SM[[]client.Record]{
+	func NewSM(cli *client.ID) *SM[[]Record] {
+		sm := &SM[[]Record]{
 			idClient: cli,
 		}
 		return sm
 	}
 
-	// Close stops all running goroutines. This is only safe after all entries have
-	// been processed.
-	func (s *SM[T]) Close() {}
-
+	// Close implements stagedpipe.StateMachine. It shuts down resources in the
+	// StateMachine that are no longer needed. This is only safe after all entries
+	// have been processed.
+	func (s *SM[T]) Close() {// We don't need to do anything}
 
 	// Start implements stagedpipe.StateMachine.Start().
 	func (s *SM[T]) Start(ctx context.Context, req stagedpipe.Request[T]) stagedpipe.Request[T] {
@@ -91,8 +90,7 @@ Setup example:
 				req.Error = fmt.Errorf("Record.ID cannot be empty")
 				return req
 			}
-			// req.Data is []client.Record not []*client.Record, so we need
-			// to do a reassignment.
+			// req.Data is []Record not []*Record, so we need to do a reassignment.
 			req.Data[i] = rec
 		}
 
@@ -122,7 +120,7 @@ To run the pipeline above is simple:
 	sm := NewSM(&client.ID{})
 	// Creates 10 pipelines that have concurrent processing for each stage of the
 	// pipeline defined in "sm".
-	p, err := stagedpipe.New(10, []stagedpipe.StateMachine[[]client.Record]{sm})
+	p, err := stagedpipe.New(10, stagedpipe.StateMachine[[].Record](sm))
 	if err != nil {
 		panic(err)
 	}
@@ -226,7 +224,7 @@ type Pipelines[T any] struct {
 
 	pipelines     []*pipeline[T]
 	preProcessors []PreProcesor[T]
-	sms           []StateMachine[T]
+	sm            StateMachine[T]
 
 	wg *sync.WaitGroup
 
@@ -260,12 +258,12 @@ func resetNext[T any](ctx context.Context, req Request[T]) Request[T] {
 // New creates a new Pipelines object with "num" pipelines running in parallel.
 // Each underlying pipeline runs concurrently for each stage. The first StateMachine.Start()
 // in the list is the starting place for executions
-func New[T any](num int, sms []StateMachine[T], options ...Option[T]) (*Pipelines[T], error) {
+func New[T any](num int, sm StateMachine[T], options ...Option[T]) (*Pipelines[T], error) {
 	if num < 1 {
 		return nil, fmt.Errorf("num must be > 0")
 	}
-	if len(sms) == 0 {
-		return nil, fmt.Errorf("must provide at least 1 StateMachine")
+	if sm == nil {
+		return nil, fmt.Errorf("must provide a valid StateMachine")
 	}
 
 	in := make(chan Request[T], 1)
@@ -289,7 +287,7 @@ func New[T any](num int, sms []StateMachine[T], options ...Option[T]) (*Pipeline
 		in:    in,
 		out:   out,
 		wg:    &sync.WaitGroup{},
-		sms:   sms,
+		sm:    sm,
 		stats: stats,
 		demux: d,
 		preProcessors: []PreProcesor[T]{
@@ -309,7 +307,7 @@ func New[T any](num int, sms []StateMachine[T], options ...Option[T]) (*Pipeline
 			in:            in,
 			out:           out,
 			num:           num,
-			sms:           sms,
+			sm:            sm,
 			preProcessors: p.preProcessors,
 			stats:         stats,
 		}
@@ -333,9 +331,7 @@ func (p *Pipelines[T]) Close() {
 	go func() {
 		p.wg.Wait()
 		close(p.out)
-		for _, sm := range p.sms {
-			sm.Close()
-		}
+		p.sm.Close()
 	}()
 }
 
@@ -426,7 +422,7 @@ func (p *Pipelines[T]) Stats() Stats {
 
 // pipeline processes DBD entries.
 type pipeline[T any] struct {
-	sms           []StateMachine[T]
+	sm            StateMachine[T]
 	preProcessors []PreProcesor[T]
 
 	stats *stats
@@ -440,7 +436,7 @@ type pipelineArgs[T any] struct {
 	in            chan Request[T]
 	out           chan Request[T]
 	num           int
-	sms           []StateMachine[T]
+	sm            StateMachine[T]
 	preProcessors []PreProcesor[T]
 	stats         *stats
 }
@@ -453,20 +449,16 @@ func newPipeline[T any](args pipelineArgs[T]) (*pipeline[T], error) {
 		out:           args.out,
 		preProcessors: args.preProcessors,
 		stats:         args.stats,
-		sms:           args.sms,
+		sm:            args.sm,
 	}
 
-	n := 0
-	for _, sm := range args.sms {
-		n += numStages(sm)
-	}
+	p.concurrency = numStages(args.sm)
 
-	if n == 0 {
+	if p.concurrency == 0 {
 		return nil, fmt.Errorf("did not find any Public methods that implement Stages")
 	}
-	p.concurrency = n
 
-	for i := 0; i < n; i++ {
+	for i := 0; i < p.concurrency; i++ {
 		go p.runner()
 	}
 
@@ -496,7 +488,7 @@ func (p *pipeline[T]) processReq(r Request[T]) Request[T] {
 	// Loop through all our states starting with p.sms[0].Start until we
 	// get either an error or the Request.Next == nil
 	// which indicates that the statemachine is done processing.
-	stage := p.sms[0].Start
+	stage := p.sm.Start
 	for {
 		// If the context has been cancelled, stop processing.
 		if r.ctx.Err() != nil {

@@ -126,7 +126,7 @@ func TestPipelines(t *testing.T) {
 	}
 
 	sm := NewSM(&client.ID{})
-	p, err := stagedpipe.New(10, []stagedpipe.StateMachine[[]client.Record]{sm})
+	p, err := stagedpipe.New(10, stagedpipe.StateMachine[[]client.Record](sm))
 	if err != nil {
 		panic(err)
 	}
@@ -189,7 +189,7 @@ func BenchmarkPipeline(b *testing.B) {
 	ctx := context.Background()
 	sm := NewSM(&client.ID{})
 
-	p, err := stagedpipe.New(runtime.NumCPU(), []stagedpipe.StateMachine[[]client.Record]{sm})
+	p, err := stagedpipe.New(runtime.NumCPU(), stagedpipe.StateMachine[[]client.Record](sm))
 	if err != nil {
 		panic(err)
 	}
