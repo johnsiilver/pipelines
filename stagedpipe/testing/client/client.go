@@ -55,12 +55,12 @@ type ID struct {
 
 const day = 24 * time.Hour
 
-func (i *ID) Call(ctx context.Context, recs []Record) error {
+func (i *ID) Call(ctx context.Context, recs []Record) ([]Record, error) {
 	if i.err != nil {
-		return errors.New("error")
+		return recs, errors.New("error")
 	}
 	if i.errAt == int(i.itemNum.Add(1)) {
-		return errors.New("error")
+		return recs, errors.New("error")
 	}
 
 	for x, rec := range recs {
@@ -84,5 +84,5 @@ func (i *ID) Call(ctx context.Context, recs []Record) error {
 		rec.BirthState = "Tennessee"
 		recs[x] = rec
 	}
-	return nil
+	return recs, nil
 }

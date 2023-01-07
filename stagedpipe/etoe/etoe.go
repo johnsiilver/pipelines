@@ -26,6 +26,7 @@ func main() {
 	sm := NewSM()
 
 	p, err := stagedpipe.New(
+		"etoe",
 		1000,
 		stagedpipe.StateMachine[Data](sm),
 	)
@@ -91,7 +92,7 @@ func main() {
 			<-GO
 			log.Println("Received go")
 		default:
-			if err := g0.Submit(ctx, NewRequest()); err != nil {
+			if err := g0.Submit(NewRequest(ctx)); err != nil {
 				panic(err)
 			}
 		}

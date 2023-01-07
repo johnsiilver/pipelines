@@ -33,7 +33,7 @@ func NewSM(cli *client.ID) *SM {
 func (s *SM) Close() {}
 
 // Start implements stagedpipe.StateMachine.Start().
-func (s *SM) Start(ctx context.Context, req stagedpipe.Request[[]client.Record]) stagedpipe.Request[[]client.Record] {
+func (s *SM) Start(req stagedpipe.Request[[]client.Record]) stagedpipe.Request[[]client.Record] {
 	// This trims any excess space off of some string attributes.
 	// Because "x" is not a pointer, x.recs are not pointers, I need
 	// to reassign the changed entry to x.recs[i] .
@@ -62,14 +62,16 @@ func (s *SM) Start(ctx context.Context, req stagedpipe.Request[[]client.Record])
 
 // IdVerifier takes a Request and adds it to a bulk request to be sent to the
 // identity service. This is the last stage of this pipeline.
-func (s *SM) IdVerifier(ctx context.Context, req stagedpipe.Request[[]client.Record]) stagedpipe.Request[[]client.Record] {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+func (s *SM) IdVerifier(req stagedpipe.Request[[]client.Record]) stagedpipe.Request[[]client.Record] {
+	ctx, cancel := context.WithTimeout(req.Ctx, 2*time.Second)
 	defer cancel()
 
-	if err := s.idClient.Call(ctx, req.Data); err != nil {
+	recs, err := s.idClient.Call(ctx, req.Data)
+	if err != nil {
 		req.Err = err
 		return req
 	}
+	req.Data = recs
 	req.Next = nil
 	return req
 }
@@ -126,7 +128,7 @@ func TestPipelines(t *testing.T) {
 	}
 
 	sm := NewSM(&client.ID{})
-	p, err := stagedpipe.New(10, stagedpipe.StateMachine[[]client.Record](sm))
+	p, err := stagedpipe.New("test statemachine", 10, stagedpipe.StateMachine[[]client.Record](sm))
 	if err != nil {
 		panic(err)
 	}
@@ -166,7 +168,8 @@ func TestPipelines(t *testing.T) {
 		}()
 
 		for _, req := range test.requests {
-			if err := g.Submit(ctx, req); err != nil {
+			req.Ctx = ctx
+			if err := g.Submit(req); err != nil {
 				panic(err)
 			}
 		}
@@ -186,10 +189,9 @@ func BenchmarkPipeline(b *testing.B) {
 
 	gen := gen{}
 	reqs := gen.genRequests(100000)
-	ctx := context.Background()
 	sm := NewSM(&client.ID{})
 
-	p, err := stagedpipe.New(runtime.NumCPU(), stagedpipe.StateMachine[[]client.Record](sm))
+	p, err := stagedpipe.New("test", runtime.NumCPU(), stagedpipe.StateMachine[[]client.Record](sm))
 	if err != nil {
 		panic(err)
 	}
@@ -205,7 +207,8 @@ func BenchmarkPipeline(b *testing.B) {
 		}()
 
 		for _, req := range reqs {
-			if err := g.Submit(ctx, req); err != nil {
+			req.Ctx = context.Background()
+			if err := g.Submit(req); err != nil {
 				panic(err)
 			}
 		}

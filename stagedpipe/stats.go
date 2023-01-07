@@ -44,7 +44,9 @@ func (s *stats) toStats() Stats {
 		Min:       time.Duration(s.min.Load()),
 		Max:       time.Duration(s.max.Load()),
 	}
-	stats.Avg = time.Duration(s.avgTotal.Load() / stats.Completed)
+	if stats.Completed != 0 {
+		stats.Avg = time.Duration(s.avgTotal.Load() / stats.Completed)
+	}
 	stats.IngestStats = s.ingestStats.toIngestStats(stats.Completed)
 	return stats
 }
@@ -70,7 +72,9 @@ func (i *ingestStats) toIngestStats(completed int64) IngestStats {
 		Min: time.Duration(i.min.Load()),
 		Max: time.Duration(i.max.Load()),
 	}
-	stats.Avg = time.Duration(i.avgTotal.Load() / completed)
+	if completed != 0 {
+		stats.Avg = time.Duration(i.avgTotal.Load() / completed)
+	}
 	return stats
 }
 

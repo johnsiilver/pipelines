@@ -32,7 +32,7 @@ func NewSM() *SM[Data] {
 func (s *SM[T]) Close() {}
 
 // Start implements stagedpipe.StateMachine.Start().
-func (s *SM[T]) Start(ctx context.Context, req stagedpipe.Request[Data]) stagedpipe.Request[Data] {
+func (s *SM[T]) Start(req stagedpipe.Request[Data]) stagedpipe.Request[Data] {
 	switch {
 	case len(req.Data.Bytes) == 0:
 		req.Err = fmt.Errorf("Request.Data cannot be empty")
@@ -43,14 +43,14 @@ func (s *SM[T]) Start(ctx context.Context, req stagedpipe.Request[Data]) stagedp
 	return req
 }
 
-func (s *SM[T]) ProcID(ctx context.Context, req stagedpipe.Request[Data]) stagedpipe.Request[Data] {
+func (s *SM[T]) ProcID(req stagedpipe.Request[Data]) stagedpipe.Request[Data] {
 	req.Data.ID = uuid.New().String()
 
 	req.Next = s.SendID
 	return req
 }
 
-func (s *SM[T]) SendID(ctx context.Context, req stagedpipe.Request[Data]) stagedpipe.Request[Data] {
+func (s *SM[T]) SendID(req stagedpipe.Request[Data]) stagedpipe.Request[Data] {
 	s.idService.Send(req)
 
 	req.Next = nil
@@ -78,7 +78,7 @@ func reverse(s []byte) {
 }
 
 // NewRequest creates a new Request.
-func NewRequest() stagedpipe.Request[Data] {
+func NewRequest(ctx context.Context) stagedpipe.Request[Data] {
 	data := make([][]byte, 0, 1000)
 	for i := 0; i < 1000; i++ {
 		b := make([]byte, 1024)
@@ -89,5 +89,5 @@ func NewRequest() stagedpipe.Request[Data] {
 		data = append(data, b)
 	}
 
-	return stagedpipe.Request[Data]{Data: Data{Bytes: data}}
+	return stagedpipe.Request[Data]{Ctx: ctx, Data: Data{Bytes: data}}
 }

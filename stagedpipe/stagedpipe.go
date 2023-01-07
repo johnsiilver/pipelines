@@ -32,6 +32,26 @@ muxed into the Pipelines and demuxed out to the RequestGroup.Out() channel.
 
 Here is an example (you can run it here: https://go.dev/play/p/LJKKDcl-c2M:
 
+	// Data is the data we will pass on a Request into our Pipelines. We could pass
+	// just []client.Record, but after using this package in practice it was found
+	// that using a Struct wrapper that could be expanded is a best practice that
+	// can save hours of pipeline and test restructure. By convention, we call this
+	// Data.
+	type Data struct {
+		// Records are Record objects we will work on in the Pipeline.
+		Records []client.Record
+	}
+
+	// NewRequest returns a new stagedpipe.Request object for use in the Pipelines.
+	// By convention we always have  NewRequest() function can return an error, we
+	// also include a MustNewRequest().
+	func NewRequest(ctx context.Context, data Data) stagedpipe.Request[Data] {
+		return stagedpipe.Request[Data]{
+			Ctx: ctx,
+			Data: data,
+		}
+	}
+
 	// SM implements stagedpipe.StateMachine. It holds all our states for the pipeline.
 	type SM struct {
 		// idClient is a client for querying for information based on an ID.
@@ -50,13 +70,14 @@ Here is an example (you can run it here: https://go.dev/play/p/LJKKDcl-c2M:
 	// StateMachine that are no longer needed. This is only safe after all entries
 	// have been processed.
 	func (s *SM) Close() {
-		// We don't need to do anything
+		// We don't need to do anything. But if your statemachien needs to shut down
+		// clients or other things, you can do that here.
 	}
 
 	// Start implements stagedpipe.StateMachine.Start(). It accepts a Request and does some fixes on the names and ID to remove spaces
 	// and then sends it on to the IDVerifier stage.
-	func (s *SM) Start(ctx context.Context, req stagedpipe.Request[[]client.Record]) stagedpipe.Request[[]client.Record] {
-		for i, rec := range req.Data {
+	func (s *SM) Start(req stagedpipe.Request[Data) stagedpipe.Request[Data] {
+		for i, rec := range req.Data.Records {
 			// This trims any excess space off of some string attributes.
 			rec.First = strings.TrimSpace(rec.First)
 			rec.Last = strings.TrimSpace(rec.Last)
@@ -73,7 +94,7 @@ Here is an example (you can run it here: https://go.dev/play/p/LJKKDcl-c2M:
 				req.Err = fmt.Errorf("Record.ID cannot be empty")
 				return req
 			}
-			req.Data[i] = rec
+			req.Data.Data[i] = rec
 		}
 
 		req.Next = s.IdVerifier // Next Stage to go to.
@@ -82,14 +103,17 @@ Here is an example (you can run it here: https://go.dev/play/p/LJKKDcl-c2M:
 
 	// IdVerifier is a stage takes a Request and adds it to a request to be sent to the
 	// identity service. This is the last stage of this pipeline.
-	func (s *SM) IdVerifier(ctx context.Context, req stagedpipe.Request[[]client.Record]) stagedpipe.Request[[]client.Record] {
+	func (s *SM) IdVerifier(req stagedpipe.Request[[]client.Record]) stagedpipe.Request[[]client.Record] {
 		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 
-		if err := s.idClient.Call(ctx, req.Data); err != nil {
+		recs, err := s.idClient.Call(ctx, req.Data.Data.Records)
+		if err != nil {
 			req.Err = err
 			return req
 		}
+		req.Data.Data.Records = recs
+
 		req.Next = nil // Signifies there are no more stages.
 		return req
 	}
@@ -99,11 +123,11 @@ Here is an example (you can run it here: https://go.dev/play/p/LJKKDcl-c2M:
 		sm := NewSM(&client.ID{})
 		// Creates 10 pipelines that have concurrent processing for each stage of the
 		// pipeline defined in "sm".
-		return stagedpipe.New(10, stagedpipe.StateMachine[[]client.Record](sm))
+		return stagedpipe.New("pipelineName", 10, stagedpipe.StateMachine[[]client.Record](sm))
 	}
 
-Above is a pipeline that takes in requests that contain a user record, cleans up the
-record, and calls out to a identity service (faked) to get birth information.
+Above is a pipeline that takes in requests that contain user records, cleans up the
+records, and calls out to a identity service (faked) to get birth information.
 
 To run the pipeline above is simple:
 
@@ -138,7 +162,7 @@ To run the pipeline above is simple:
 			if ctx.Err() != nil {
 				break
 			}
-			if err := g.Submit(ctx, stagedpipe.Request[[]client.Record]{Data: recs}); err != nil {
+			if err := g.Submit(ctx, NewRequest(ctx, Data{Records: recs})); err != nil {
 				cancel()
 				g.Close(true)
 				panic(err)
@@ -146,49 +170,6 @@ To run the pipeline above is simple:
 		}
 		g.Close(false)
 	}
-
-	sm := NewSM(&client.ID{})
-	// Creates 10 pipelines that have concurrent processing for each stage of the
-	// pipeline defined in "sm".
-	p, err := stagedpipe.New(10, stagedpipe.StateMachine[[].Record](sm))
-	if err != nil {
-		panic(err)
-	}
-	defer p.Close()
-
-	// Make a new RequestGroup that I can send requests on.
-	g := p.NewRequestGroup()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Start processing output.
-	go func() {
-		for rec := range g.Out() {
-			if rec.Err != nil {
-				cancel()
-				g.Close(true)
-				return
-			}
-			WriteToDB(rec)
-		}
-	}()
-
-	// Read all the data from some source and write it to the pipeline.
-	for _, recs := range ReadDataFromSource() {
-		if ctx.Err() != nil {
-			break
-		}
-		if err := g.Submit(ctx, Request{Data: recs}); err != nil {
-			cancel()
-			p.Close(true)
-			// do something like return or panic()
-		}
-	}
-	if ctx.Err() != nil {
-		p.Close(true)
-	}
-	g.Close()
 
 If the above example is the only use for the pipeline, then we can also call p.Close().
 But if using this with multiple RequestGroup(s) or this is processing for a server,
@@ -211,6 +192,9 @@ import (
 
 // Requests is a Request to be processed by a pipeline.
 type Request[T any] struct {
+	// Ctx is a Context scoped for this requestor set of requests.
+	Ctx context.Context
+
 	// Data is data that is processed in this Request.
 	Data T
 
@@ -227,7 +211,6 @@ type Request[T any] struct {
 	// groupNum is used to track what RequestGroup this Request belongs to for routing.
 	groupNum uint64
 
-	ctx                   context.Context
 	queueTime, ingestTime time.Time
 }
 
@@ -235,26 +218,29 @@ type Request[T any] struct {
 // are the States and execution starts with the Start() method.
 type StateMachine[T any] interface {
 	// Start is the starting Stage of the StateMachine.
-	Start(ctx context.Context, req Request[T]) Request[T]
+	Start(req Request[T]) Request[T]
 	// Close stops the StateMachine.
 	Close()
 }
 
 // Stage represents a function that executes at a given state.
-type Stage[T any] func(ctx context.Context, req Request[T]) Request[T]
+type Stage[T any] func(req Request[T]) Request[T]
 
 // PreProcessor is called before each Stage. If req.Err is set
 // execution of the Request in the StateMachine stops.
-type PreProcesor[T any] func(ctx context.Context, req Request[T]) Request[T]
+type PreProcesor[T any] func(req Request[T]) Request[T]
 
 // Pipelines provides access to a set of Pipelines that processes DBD information.
 type Pipelines[T any] struct {
+	name string
+
 	in  chan Request[T]
 	out chan Request[T]
 
 	pipelines     []*pipeline[T]
 	preProcessors []PreProcesor[T]
 	sm            StateMachine[T]
+	delayWarning  time.Duration
 
 	wg *sync.WaitGroup
 
@@ -278,9 +264,22 @@ func PreProcessors[T any](p ...PreProcesor[T]) Option[T] {
 	}
 }
 
+// DelayWarning will send a log message whenever pushing entries to the out channel
+// takes longer than the supplied time.Duration. Not setting this results will result
+// in no warnings. Useful when chaining Pipelines and figuring out where something is stuck.
+func DelayWarning[T any](d time.Duration) Option[T] {
+	return func(pipelines *Pipelines[T]) error {
+		if d < 0 {
+			return fmt.Errorf("cannot provide a DelayWarning < 0")
+		}
+		pipelines.delayWarning = d
+		return nil
+	}
+}
+
 // resetNext is a Preprocessor we use to reset req.Next at each stage. This prevents
 // accidental infinite loop scenarios.
-func resetNext[T any](ctx context.Context, req Request[T]) Request[T] {
+func resetNext[T any](req Request[T]) Request[T] {
 	req.Next = nil
 	return req
 }
@@ -288,7 +287,7 @@ func resetNext[T any](ctx context.Context, req Request[T]) Request[T] {
 // New creates a new Pipelines object with "num" pipelines running in parallel.
 // Each underlying pipeline runs concurrently for each stage. The first StateMachine.Start()
 // in the list is the starting place for executions
-func New[T any](num int, sm StateMachine[T], options ...Option[T]) (*Pipelines[T], error) {
+func New[T any](name string, num int, sm StateMachine[T], options ...Option[T]) (*Pipelines[T], error) {
 	if num < 1 {
 		return nil, fmt.Errorf("num must be > 0")
 	}
@@ -314,6 +313,7 @@ func New[T any](num int, sm StateMachine[T], options ...Option[T]) (*Pipelines[T
 	}
 
 	p := &Pipelines[T]{
+		name:  name,
 		in:    in,
 		out:   out,
 		wg:    &sync.WaitGroup{},
@@ -334,12 +334,15 @@ func New[T any](num int, sm StateMachine[T], options ...Option[T]) (*Pipelines[T
 	pipelines := make([]*pipeline[T], 0, num)
 	for i := 0; i < num; i++ {
 		args := pipelineArgs[T]{
+			name:          name,
+			id:            i,
 			in:            in,
 			out:           out,
 			num:           num,
 			sm:            sm,
 			preProcessors: p.preProcessors,
 			stats:         stats,
+			delayWarning:  p.delayWarning,
 		}
 
 		_, err := newPipeline(args)
@@ -398,18 +401,27 @@ func (r *RequestGroup[T]) Close(drain bool) {
 	r.p.demux.RemoveReceiver(r.id)
 }
 
-// Submit submits a new Request into the Pipelines.
-func (r *RequestGroup[T]) Submit(ctx context.Context, req Request[T]) error {
+// Submit submits a new Request into the Pipelines. A Request with a nil Context will
+// cause a panic.
+func (r *RequestGroup[T]) Submit(req Request[T]) error {
+	if req.Ctx == nil {
+		panic("Request.Ctx cannot be nil")
+	}
+
 	// This let's the Pipelines object know it is receiving a new Request to process.
 	r.p.wg.Add(1)
 	// This tracks the request in the RequestGroup.
 	r.wg.Add(1)
 
 	req.groupNum = r.id
-	req.ctx = ctx
 	req.queueTime = time.Now()
 
-	r.p.in <- req
+	select {
+	case <-req.Ctx.Done():
+		return req.Ctx.Err()
+	case r.p.in <- req:
+	}
+
 	return nil
 }
 
@@ -436,9 +448,14 @@ func (p *Pipelines[T]) NewRequestGroup() *RequestGroup[T] {
 
 	go func() {
 		defer close(r.user)
+
 		for req := range r.out {
 			r.wg.Done()
-			r.user <- req
+			select {
+			case <-req.Ctx.Done():
+				return
+			case r.user <- req:
+			}
 		}
 	}()
 
@@ -452,34 +469,44 @@ func (p *Pipelines[T]) Stats() Stats {
 
 // pipeline processes DBD entries.
 type pipeline[T any] struct {
+	name string
+	id   int
+
 	sm            StateMachine[T]
 	preProcessors []PreProcesor[T]
 
 	stats *stats
 
-	in          chan Request[T]
-	out         chan Request[T]
-	concurrency int
+	in           chan Request[T]
+	out          chan Request[T]
+	concurrency  int
+	delayWarning time.Duration
 }
 
 type pipelineArgs[T any] struct {
+	name          string
+	id            int
 	in            chan Request[T]
 	out           chan Request[T]
 	num           int
 	sm            StateMachine[T]
 	preProcessors []PreProcesor[T]
 	stats         *stats
+	delayWarning  time.Duration
 }
 
 // newPipeline creates a new Pipeline. A new Pipeline should be created for a new set of related
 // requests.
 func newPipeline[T any](args pipelineArgs[T]) (*pipeline[T], error) {
 	p := &pipeline[T]{
+		name:          args.name,
+		id:            args.id,
 		in:            args.in,
 		out:           args.out,
 		preProcessors: args.preProcessors,
 		stats:         args.stats,
 		sm:            args.sm,
+		delayWarning:  args.delayWarning,
 	}
 
 	p.concurrency = numStages(args.sm)
@@ -497,10 +524,34 @@ func newPipeline[T any](args pipelineArgs[T]) (*pipeline[T], error) {
 
 // Submit submits a request for processing.
 func (p *pipeline[T]) runner() {
+	id := fmt.Sprintf("%s-%d", p.name, p.id)
+	var tick *time.Ticker
+	if p.delayWarning != 0 {
+		tick = time.NewTicker(p.delayWarning)
+	}
 	for r := range p.in {
 		r = p.processReq(r)
-		p.out <- r
 		p.calcExitStats(r)
+		if p.delayWarning != 0 {
+			for {
+				tick.Reset(p.delayWarning)
+				select {
+				case <-r.Ctx.Done():
+					return
+				case p.out <- r:
+				case <-tick.C:
+					log.Printf("pipeline(%s) is having output delays exceeding %v", id, p.delayWarning)
+					continue
+				}
+				break
+			}
+		} else {
+			select {
+			case <-r.Ctx.Done():
+				return
+			case p.out <- r:
+			}
+		}
 	}
 }
 
@@ -521,18 +572,18 @@ func (p *pipeline[T]) processReq(r Request[T]) Request[T] {
 	stage := p.sm.Start
 	for {
 		// If the context has been cancelled, stop processing.
-		if r.ctx.Err() != nil {
-			r.Err = r.ctx.Err()
+		if r.Ctx.Err() != nil {
+			r.Err = r.Ctx.Err()
 			return r
 		}
 
 		for _, pp := range p.preProcessors {
-			r = pp(r.ctx, r)
+			r = pp(r)
 			if r.Err != nil {
 				return r
 			}
 		}
-		r = stage(r.ctx, r)
+		r = stage(r)
 		if r.Err != nil {
 			return r
 		}
