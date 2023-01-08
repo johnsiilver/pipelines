@@ -199,10 +199,6 @@ To run the pipeline above is simple:
 
 		return ch
 	}
-
-If the above example is the only use for the pipeline, then we can also call p.Close().
-But if using this with multiple RequestGroup(s) or this is processing for a server,
-there is no need to call p.Close().
 */
 package stagedpipe
 
