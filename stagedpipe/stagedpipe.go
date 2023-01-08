@@ -30,7 +30,7 @@ with RequestGroup.Out(), which returns a channel of Request(s).
 Multiple RequestGroup(s) can send into the Pipelines for processing, as everything is
 muxed into the Pipelines and demuxed out to the RequestGroup.Out() channel.
 
-Here is an example (you can run it here: https://go.dev/play/p/LJKKDcl-c2M:
+Here is an example (you can run it here: https://go.dev/play/p/3enp7iZxmgZ:
 
 	// Data is the data we will pass on a Request into our Pipelines. We could pass
 	// just []client.Record, but after using this package in practice it was found
@@ -38,16 +38,15 @@ Here is an example (you can run it here: https://go.dev/play/p/LJKKDcl-c2M:
 	// can save hours of pipeline and test restructure. By convention, we call this
 	// Data.
 	type Data struct {
-		// Records are Record objects we will work on in the Pipeline.
 		Records []client.Record
 	}
 
 	// NewRequest returns a new stagedpipe.Request object for use in the Pipelines.
-	// By convention we always have  NewRequest() function can return an error, we
-	// also include a MustNewRequest().
+	// By convention we always have NewRequest() function.  If NewRequest can return
+	// an error, we also include a MustNewRequest().
 	func NewRequest(ctx context.Context, data Data) stagedpipe.Request[Data] {
 		return stagedpipe.Request[Data]{
-			Ctx: ctx,
+			Ctx:  ctx,
 			Data: data,
 		}
 	}
@@ -70,13 +69,13 @@ Here is an example (you can run it here: https://go.dev/play/p/LJKKDcl-c2M:
 	// StateMachine that are no longer needed. This is only safe after all entries
 	// have been processed.
 	func (s *SM) Close() {
-		// We don't need to do anything. But if your statemachien needs to shut down
-		// clients or other things, you can do that here.
+		//We don't need to do anything
 	}
 
-	// Start implements stagedpipe.StateMachine.Start(). It accepts a Request and does some fixes on the names and ID to remove spaces
+	// Start implements stagedpipe.StateMachine.Start(). It accepts a Request and
+	// does some fixes on the names and ID to remove spaces
 	// and then sends it on to the IDVerifier stage.
-	func (s *SM) Start(req stagedpipe.Request[Data) stagedpipe.Request[Data] {
+	func (s *SM) Start(req stagedpipe.Request[Data]) stagedpipe.Request[Data] {
 		for i, rec := range req.Data.Records {
 			// This trims any excess space off of some string attributes.
 			rec.First = strings.TrimSpace(rec.First)
@@ -94,7 +93,7 @@ Here is an example (you can run it here: https://go.dev/play/p/LJKKDcl-c2M:
 				req.Err = fmt.Errorf("Record.ID cannot be empty")
 				return req
 			}
-			req.Data.Data[i] = rec
+			req.Data.Records[i] = rec
 		}
 
 		req.Next = s.IdVerifier // Next Stage to go to.
@@ -103,27 +102,26 @@ Here is an example (you can run it here: https://go.dev/play/p/LJKKDcl-c2M:
 
 	// IdVerifier is a stage takes a Request and adds it to a request to be sent to the
 	// identity service. This is the last stage of this pipeline.
-	func (s *SM) IdVerifier(req stagedpipe.Request[[]client.Record]) stagedpipe.Request[[]client.Record] {
-		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	func (s *SM) IdVerifier(req stagedpipe.Request[Data]) stagedpipe.Request[Data] {
+		ctx, cancel := context.WithTimeout(req.Ctx, 2*time.Second)
 		defer cancel()
 
-		recs, err := s.idClient.Call(ctx, req.Data.Data.Records)
+		recs, err := s.idClient.Call(ctx, req.Data.Records)
 		if err != nil {
 			req.Err = err
 			return req
 		}
-		req.Data.Data.Records = recs
+		req.Data.Records = recs
 
 		req.Next = nil // Signifies there are no more stages.
 		return req
 	}
 
 	// RunPipline creates and starts 10 Pipelines using our StateMachine "SM" defined above.
-	func RunPipeline() (*stagedpipe.Pipelines[[]client.Record], error) {
+	// Because there are 2 stages, 2 * 10 goroutines will be created.
+	func RunPipeline() (*stagedpipe.Pipelines[Data], error) {
 		sm := NewSM(&client.ID{})
-		// Creates 10 pipelines that have concurrent processing for each stage of the
-		// pipeline defined in "sm".
-		return stagedpipe.New("pipelineName", 10, stagedpipe.StateMachine[[]client.Record](sm))
+		return stagedpipe.New("example pipeline", 10, stagedpipe.StateMachine[Data](sm))
 	}
 
 Above is a pipeline that takes in requests that contain user records, cleans up the
@@ -153,7 +151,7 @@ To run the pipeline above is simple:
 					g.Close(true)
 					return
 				}
-				WriteToDB(req.Data)
+				WriteToDB(req.Data.Records)
 			}
 		}()
 
@@ -162,13 +160,44 @@ To run the pipeline above is simple:
 			if ctx.Err() != nil {
 				break
 			}
-			if err := g.Submit(ctx, NewRequest(ctx, Data{Records: recs})); err != nil {
+			if err := g.Submit(NewRequest(ctx, Data{Records: recs})); err != nil {
 				cancel()
 				g.Close(true)
 				panic(err)
 			}
 		}
 		g.Close(false)
+	}
+
+	// WriteToDB is just a standin for writing output to a DB.
+	func WriteToDB(recs []client.Record) {
+		for _, rec := range recs {
+			log.Printf("Wrote: %+v", rec)
+		}
+	}
+
+	// ReadDataFromSource is just a standin for some storage of data (disk, RPC, DB).
+	func ReadDataFromSource() chan []client.Record {
+		ch := make(chan []client.Record, 1)
+		go func() {
+			defer close(ch)
+
+			nameGenerator := namegenerator.NewNameGenerator(time.Now().UTC().UnixNano())
+
+			idSrc := 0
+			for i := 0; i < 100; i++ {
+				recs := []client.Record{}
+				for x := 0; x < 100; x++ {
+					id := strconv.Itoa(idSrc)
+					idSrc++
+					rec := client.Record{First: nameGenerator.Generate(), Last: nameGenerator.Generate(), ID: id}
+					recs = append(recs, rec)
+				}
+				ch <- recs
+			}
+		}()
+
+		return ch
 	}
 
 If the above example is the only use for the pipeline, then we can also call p.Close().
