@@ -16,7 +16,7 @@ Every pipeline will receive a Request, which contains the data to be manipulated
 Each Request is designed to be stack allocated, meaning the data should not be a pointer
 unless absolutely necessary.
 
-You define StateMachine objects that satisfy the StateMachine interface. These states
+You define a StateMachine object that satisfies the StateMachine interface. These states
 represent the stages of the pipeline. A single StateMachine will process a single
 Request at a time, allowing use of your StateMachine's internal objects without mutexes.
 All StateMachine methods that implement a Stage MUST BE PUBLIC.
@@ -265,7 +265,10 @@ type Pipelines[T any] struct {
 	pipelines     []*pipeline[T]
 	preProcessors []PreProcesor[T]
 	sm            StateMachine[T]
-	delayWarning  time.Duration
+	// subStages is used to record the number of stages in objects that aren't the
+	// StateMachine.
+	subStages    int
+	delayWarning time.Duration
 
 	wg *sync.WaitGroup
 
@@ -298,6 +301,20 @@ func DelayWarning[T any](d time.Duration) Option[T] {
 			return fmt.Errorf("cannot provide a DelayWarning < 0")
 		}
 		pipelines.delayWarning = d
+		return nil
+	}
+}
+
+// CountSubStages is used when the StateMachine object does not hold all the Stage(s).
+// This allows you to design multiple pipleines that use the same data object but will
+// be executed as a single pipeline. CountSubStages is used to correctly calculate
+// the concurrency. Without this, only stages in the StateMachine object will be counted
+// toward the concurrency count.
+func CountSubStages[T any](subStageObj ...T) Option[T] {
+	return func(pipelines *Pipelines[T]) error {
+		for _, obj := range subStageObj {
+			pipelines.subStages += numStages[T](obj)
+		}
 		return nil
 	}
 }
@@ -365,6 +382,7 @@ func New[T any](name string, num int, sm StateMachine[T], options ...Option[T]) 
 			out:           out,
 			num:           num,
 			sm:            sm,
+			subStages:     p.subStages,
 			preProcessors: p.preProcessors,
 			stats:         stats,
 			delayWarning:  p.delayWarning,
@@ -397,17 +415,17 @@ func (p *Pipelines[T]) Close() {
 // the Pipelines and receive the processed data. This allows multiple callers to
 // multiplex onto the same Pipelines. A RequestGroup is created with Pipelines.NewRequestGroup().
 type RequestGroup[T any] struct {
-	// id is the ID of the RequestGroup.
-	id uint64
+	// wg is used to know when it is safe to close the output channel.
+	wg sync.WaitGroup
 	// out is the channel the demuxer will use to send us output.
 	out chan Request[T]
 	// user is the channel that we give the user to receive output. We do a little
 	// processing between receiveing on "out" and sending to "user".
 	user chan Request[T]
-	// wg is used to know when it is safe to close the output channel.
-	wg sync.WaitGroup
 	// p is the Pipelines object this RequestGroup is tied to.
 	p *Pipelines[T]
+	// id is the ID of the RequestGroup.
+	id uint64
 }
 
 // Close signals that the input is done and will wait for all Request objects to
@@ -455,7 +473,7 @@ func (r *RequestGroup[T]) Submit(req Request[T]) error {
 // been sent and the output channel will close once all data has been processed.
 // You MUST get all data from Out() until it closes, even if you run into an error.
 // Otherwise the pipelines become stuck.
-func (r *RequestGroup[T]) Out() <-chan Request[T] {
+func (r *RequestGroup[T]) Out() chan Request[T] {
 	return r.user
 }
 
@@ -509,14 +527,15 @@ type pipeline[T any] struct {
 }
 
 type pipelineArgs[T any] struct {
-	name          string
-	id            int
+	sm            StateMachine[T]
 	in            chan Request[T]
 	out           chan Request[T]
-	num           int
-	sm            StateMachine[T]
-	preProcessors []PreProcesor[T]
 	stats         *stats
+	name          string
+	preProcessors []PreProcesor[T]
+	id            int
+	num           int
+	subStages     int
 	delayWarning  time.Duration
 }
 
@@ -534,7 +553,7 @@ func newPipeline[T any](args pipelineArgs[T]) (*pipeline[T], error) {
 		delayWarning:  args.delayWarning,
 	}
 
-	p.concurrency = numStages(args.sm)
+	p.concurrency = numStages[T](args.sm) + args.subStages
 
 	if p.concurrency == 0 {
 		return nil, fmt.Errorf("did not find any Public methods that implement Stages")
@@ -632,7 +651,7 @@ func (p *pipeline[T]) calcExitStats(r Request[T]) {
 	p.stats.avgTotal.Add(int64(runTime))
 }
 
-func numStages[T any](sm StateMachine[T]) int {
+func numStages[T any](sm any) int {
 	var sig Stage[T]
 	count := 0
 	for range method.MatchesSignature(reflect.ValueOf(sm), reflect.ValueOf(sig)) {
