@@ -57,6 +57,6 @@ in ->->               ->-> out
 
 You can than concurrently run multiple pipelines. This differs from the standard model in that a full pipeline might not have all stages running, but it will have the same number of stages running. Mathmatically, we still end up in a X * Y number of concurrent actions.
 
-`Stage`s are constructed inside a type that implements our `StateMachine` interface. Any method on that object that is `Public` and implements `Stage` becomes a valid stage to be run. You pass the `StateMachine` to our `New()` constructor with the number of parallel pipelines (all running concurrently) that you wish to run. A good starting number is `runtime.NumCPU()`.
+`Stage`s are constructed inside a type that implements our `StateMachine` interface. Any method on that object that is `Public` and implements `Stage` becomes a valid stage to be run. You pass the `StateMachine` to our `New()` constructor with the number of parallel pipelines (all running concurrently) that you wish to run. A good starting number is either 1 or `runtime.NumCPU()`.  The more stages you have or the more blocing on IO you have, the more 1 is a great starting point.
 
-Accessing the pipeline for happens by creating a `RequestGroup`. You can simply stream values in and out of the pipeline separate from other `RequestGroup`s using the the `Submit()` method and `Out` channel.  
+Accessing the pipeline happens by creating a `RequestGroup`. You can simply stream values in and out of the pipeline separate from other `RequestGroup`s using the the `Submit()` method and `Out` channel.  

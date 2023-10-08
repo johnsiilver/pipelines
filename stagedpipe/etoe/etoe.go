@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"runtime"
 	"runtime/debug"
 	"sync"
@@ -10,9 +12,6 @@ import (
 	"time"
 
 	"github.com/johnsiilver/pipelines/stagedpipe"
-
-	"net/http"
-	_ "net/http/pprof"
 )
 
 func main() {
@@ -27,7 +26,7 @@ func main() {
 
 	p, err := stagedpipe.New(
 		"etoe",
-		1000,
+		1,
 		stagedpipe.StateMachine[Data](sm),
 	)
 	if err != nil {
@@ -81,7 +80,7 @@ func main() {
 		}
 	}()
 
-	//const _100Million = 100000000
+	// const _100Million = 100000000
 	const _1K = 1000 // Which does 1000 * 1000(each Request has 1000 entries)
 	ctx := context.Background()
 
@@ -98,6 +97,6 @@ func main() {
 		}
 	}
 	log.Println("closing g0")
-	g0.Close(false)
+	g0.Close()
 	done.Wait()
 }

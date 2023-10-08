@@ -148,8 +148,8 @@ To run the pipeline above is simple:
 			for req := range g.Out() {
 				if req.Err != nil {
 					cancel()
-					g.Close(true)
-					return
+					g.Close()
+					continue
 				}
 				WriteToDB(req.Data.Records)
 			}
@@ -162,11 +162,11 @@ To run the pipeline above is simple:
 			}
 			if err := g.Submit(NewRequest(ctx, Data{Records: recs})); err != nil {
 				cancel()
-				g.Close(true)
+				g.Close()
 				panic(err)
 			}
 		}
-		g.Close(false)
+		g.Close()
 	}
 
 	// WriteToDB is just a standin for writing output to a DB.
@@ -204,6 +204,7 @@ package stagedpipe
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"reflect"
@@ -415,8 +416,6 @@ func (p *Pipelines[T]) Close() {
 // the Pipelines and receive the processed data. This allows multiple callers to
 // multiplex onto the same Pipelines. A RequestGroup is created with Pipelines.NewRequestGroup().
 type RequestGroup[T any] struct {
-	// wg is used to know when it is safe to close the output channel.
-	wg sync.WaitGroup
 	// out is the channel the demuxer will use to send us output.
 	out chan Request[T]
 	// user is the channel that we give the user to receive output. We do a little
@@ -424,43 +423,39 @@ type RequestGroup[T any] struct {
 	user chan Request[T]
 	// p is the Pipelines object this RequestGroup is tied to.
 	p *Pipelines[T]
+	// wg is used to know when it is safe to close the output channel.
+	wg sync.WaitGroup
 	// id is the ID of the RequestGroup.
 	id uint64
 }
 
 // Close signals that the input is done and will wait for all Request objects to
-// finish proceessing, then close the output channel. If drain is set, all requests currently still processing
-// will be dropped. This should only be done if you receive an error and no longer intend
-// on processing any output.
-func (r *RequestGroup[T]) Close(drain bool) {
-	if drain {
-		go func() {
-			for range r.out {
-				r.wg.Done()
-			}
-		}()
-	}
+// finish proceessing, then close the output channel. The owner of the RequestGroup
+// is still required to pull all entries out of the RequestGroup via .Out() and until
+// that occurs, Close() will not return.
+func (r *RequestGroup[T]) Close() {
 	r.wg.Wait()
-	r.p.demux.RemoveReceiver(r.id)
+	r.p.demux.RemoveReceiver(r.id) // This closes the input channel into the Pipelines object
 }
 
 // Submit submits a new Request into the Pipelines. A Request with a nil Context will
 // cause a panic.
 func (r *RequestGroup[T]) Submit(req Request[T]) error {
 	if req.Ctx == nil {
-		panic("Request.Ctx cannot be nil")
+		return errors.New("Request.Ctx cannot be nil")
 	}
+
+	req.groupNum = r.id
+	req.queueTime = time.Now()
 
 	// This let's the Pipelines object know it is receiving a new Request to process.
 	r.p.wg.Add(1)
 	// This tracks the request in the RequestGroup.
 	r.wg.Add(1)
-
-	req.groupNum = r.id
-	req.queueTime = time.Now()
-
 	select {
 	case <-req.Ctx.Done():
+		r.p.wg.Done()
+		r.wg.Done()
 		return req.Ctx.Err()
 	case r.p.in <- req:
 	}
@@ -491,14 +486,9 @@ func (p *Pipelines[T]) NewRequestGroup() *RequestGroup[T] {
 
 	go func() {
 		defer close(r.user)
-
 		for req := range r.out {
 			r.wg.Done()
-			select {
-			case <-req.Ctx.Done():
-				return
-			case r.user <- req:
-			}
+			r.user <- req
 		}
 	}()
 
@@ -580,8 +570,6 @@ func (p *pipeline[T]) runner() {
 			for {
 				tick.Reset(p.delayWarning)
 				select {
-				case <-r.Ctx.Done():
-					return
 				case p.out <- r:
 				case <-tick.C:
 					log.Printf("pipeline(%s) is having output delays exceeding %v", id, p.delayWarning)
@@ -590,11 +578,7 @@ func (p *pipeline[T]) runner() {
 				break
 			}
 		} else {
-			select {
-			case <-r.Ctx.Done():
-				return
-			case p.out <- r:
-			}
+			p.out <- r
 		}
 	}
 }

@@ -24,13 +24,13 @@ type Stats struct {
 
 // stats is used to atomically calculate our Pipeline stats.
 type stats struct {
+	ingestStats *ingestStats
+
 	running   atomic.Int64
 	completed atomic.Int64
 	min       atomic.Int64
 	max       atomic.Int64
 	avgTotal  atomic.Int64
-
-	ingestStats *ingestStats
 }
 
 func newStats() *stats {
