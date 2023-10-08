@@ -13,6 +13,8 @@ in ->->                                            ->-> out
         -> stage0 -> stage1 -> stage2 -> stage3 -> 
 ```
 
+This looks similar to a standard fan in/out model, with the exception that each stage here is running concurrently with the other stages. In the above scenario, 16 workers are running at various stages and we have 4 parallel jobs.
+
 ## The First Problem
 
 In simple pipelines with few stages, this is pretty easy. In complex pipelines, you end up with a bunch of channels and go routines. When you add to the pipeline after you haven't looked at the code in a few months, you forget to call `make(chan X)` in your constructor, which causes a deadlock. You fix that, but you forgot to call `go p.stage()`, which caused another deadlock. You have lots of ugly channels and the code is brittle.
@@ -60,3 +62,29 @@ You can than concurrently run multiple pipelines. This differs from the standard
 `Stage`s are constructed inside a type that implements our `StateMachine` interface. Any method on that object that is `Public` and implements `Stage` becomes a valid stage to be run. You pass the `StateMachine` to our `New()` constructor with the number of parallel pipelines (all running concurrently) that you wish to run. A good starting number is either 1 or `runtime.NumCPU()`.  The more stages you have or the more blocing on IO you have, the more 1 is a great starting point.
 
 Accessing the pipeline happens by creating a `RequestGroup`. You can simply stream values in and out of the pipeline separate from other `RequestGroup`s using the the `Submit()` method and `Out` channel.  
+
+To help get you started, we have a `tools/` directory containing the `stagedpipe-cli`.  This allows you to generate all the structure that is required to implement a pipeline.
+
+Installation can be done with: `go install .` from that directory.
+
+Simply enter into your new package `main`'s path, and type: `stagedpipe-cli -m -p "myPipeline"` to get:
+
+```
+.
+├── main.go
+└── mypipeline
+        ├── data.go
+        └── mypipeline.go
+```
+Run `go mod init <path>`, `go mod tidy` and `go fmt ./...`, to get a running program:
+```
+.
+├── go.mod
+├── go.sum
+├── main.go
+└── mypipeline
+        ├── data.go
+        └── mypipeline.go
+```
+
+Type `go run .` to run the basic pipeline that you can change to fit your needs.

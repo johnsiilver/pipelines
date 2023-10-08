@@ -30,7 +30,10 @@ with RequestGroup.Out(), which returns a channel of Request(s).
 Multiple RequestGroup(s) can send into the Pipelines for processing, as everything is
 muxed into the Pipelines and demuxed out to the RequestGroup.Out() channel.
 
-Here is an example (you can run it here: https://go.dev/play/p/3enp7iZxmgZ:
+There is a provided CLI application called `stagedpipe-cli“ located in the `tools/` directory
+that can be used to generate all the boilerplate you see below for a working example.
+
+Here is an example (you can run it here: https://go.dev/play/p/ZOUzWgRb1oh:
 
 	// Data is the data we will pass on a Request into our Pipelines. We could pass
 	// just []client.Record, but after using this package in practice it was found
