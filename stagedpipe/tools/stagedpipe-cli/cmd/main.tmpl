@@ -20,13 +20,13 @@ func main() {
 	ctx := context.Background()
     
     // Create the StateMachine implementation that will be used in our pipeline.
-    sm, err := {{ .PackageName }}.NewSM()
+    xsm, err := {{ .PackageName }}.NewSM()
     if err != nil {
         log.Fatalf("cannot start state machine: %s", err)
     }
 
     // Create our parallel and concurrent Pipeline from our StateMachine.
-    pipeline, err := stagedpipe.New[{{ .PackageName }}.Data]("pipeline name", concurrency, sm)
+    pipeline, err := stagedpipe.New[{{ .PackageName }}.Data]("pipeline name", concurrency, xsm)
     if err!= nil {
         log.Fatalf("cannot create a pipeline: %s", err)
     }
