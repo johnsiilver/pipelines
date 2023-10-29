@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v4"
+
 	"github.com/johnsiilver/pipelines/stagedpipe"
 )
 

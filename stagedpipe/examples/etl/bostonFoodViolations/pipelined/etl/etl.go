@@ -24,23 +24,17 @@ import (
 	"github.com/cenkalti/backoff"
 	"github.com/jackc/pgconn"
 	"github.com/jackc/pgx/v4"
+
 	"github.com/johnsiilver/pipelines/stagedpipe"
 )
 
 // SM implements stagedpipe.StateMachine. It holds all our states for the pipeline.
-type SM struct {
-	// This only belong here if you have a single client into the SM.
-	// If you have multiple clients, attach this via the Data object for the
-	// RequestGroup.
-	tx pgx.Tx
-}
+type SM struct {}
 
 // NewSM creates a new stagepipe.StateMachine from SM. db is used to create a
 // transaction.
-func NewSM(tx pgx.Tx) (*SM, error) {
-	sm := &SM{
-		tx: tx,
-	}
+func NewSM() (*SM, error) {
+	sm := &SM{}
 	return sm, nil
 }
 

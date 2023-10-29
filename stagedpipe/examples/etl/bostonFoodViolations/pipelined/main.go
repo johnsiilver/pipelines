@@ -76,7 +76,7 @@ func main() {
 	}
 
 	// Setup our pipeline.
-	sm, err := etl.NewSM(tx)
+	sm, err := etl.NewSM()
 	if err != nil {
 		log.Fatalf("cannot start state machine: %s", err)
 	}
