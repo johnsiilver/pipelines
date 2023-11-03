@@ -17,8 +17,6 @@ Here is a brief introduction to standard Go pipelining, standard Go state machin
 
 [![Introduction Video](https://i.vimeocdn.com/video/1745567750-9b634f58614db8361e28cac2a9f77cca99923c16afd05ce112cbf506a5722656-d_640?f=webp)](https://player.vimeo.com/video/879175351?badge=0&amp;autopause=0&amp;quality_selector=1&amp;player_id=0&amp;app_id=58479)
 
-<div style="padding:56.25% 0 0 0;position:relative;"><iframe src="https://player.vimeo.com/video/879175351?badge=0&amp;autopause=0&amp;quality_selector=1&amp;player_id=0&amp;app_id=58479" frameborder="0" allow="autoplay; fullscreen; picture-in-picture" style="position:absolute;top:0;left:0;width:100%;height:100%;" title="stagedpipe-intro"></iframe></div><script src="https://player.vimeo.com/api/player.js"></script>
-
 # For Those That Don't Watch Videos
 
 Many of you may not want to watch the videos and prefer a guide.  
@@ -77,9 +75,10 @@ Something to watch out for:
 
 Ardan Labs has a great [tutorial](https://www.ardanlabs.com/blog/2021/09/extract-transform-load-in-go.html) on building a basic ETL pipeline in Go. With their permission, I have re-written their example using the stagedpipe framework. 
 
-This lesson takes about 30 minutes and I build the pipeline from scratch without using the `stagedpipe-cli` tool.
+This lesson takes about 30 minutes and I build the pipeline from scratch without using the `stagedpipe-cli` tool, so it takes longer that normal. I use a local postgres server to store data in, so if you want to follow this you will need one too.
 
-<iframe src="https://player.vimeo.com/video/879203973?h=24035c0a82" width="640" height="564" frameborder="0" allow="autoplay; fullscreen" allowfullscreen></iframe>
+
+[![ETL Video](https://i.vimeocdn.com/video/1745612616-fbd27ad348e812476577b0d5866b3787dd1ce8821f110c977bfe14022a6a0b26-d_640?f=webp)](https://player.vimeo.com/video/879203973?h=24035c0a82)
 
 Code for our modified version of Ardan Labs code and our version can be found [here](https://github.com/johnsiilver/pipelines/tree/main/stagedpipe/examples/etl/bostonFoodViolations)
 
