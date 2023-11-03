@@ -17,11 +17,11 @@ Here is a brief introduction to standard Go pipelining, standard Go state machin
 
 [![Introduction Video](https://i.vimeocdn.com/video/1745567750-9b634f58614db8361e28cac2a9f77cca99923c16afd05ce112cbf506a5722656-d_640?f=webp)](https://player.vimeo.com/video/879175351?badge=0&amp;autopause=0&amp;quality_selector=1&amp;player_id=0&amp;app_id=58479)
 
-* [Introduction](https://vimeo.com/manage/videos/879175351)
-* [Basic Go Pipelines](https://vimeo.com/manage/videos/879175351#t=0m16s)
-* [Basic Go State Machines](https://vimeo.com/manage/videos/879175351#t=2m22s)
-* [Why Use StagedPipe](https://vimeo.com/manage/videos/879175351#t=5m28s)
-* [StagedPipe Hello World](https://vimeo.com/manage/videos/879175351#t=9m28s)
+* [Introduction](https://vimeo.com//879175351)
+* [Basic Go Pipelines](https://vimeo.com/879175351#t=0m16s)
+* [Basic Go State Machines](https://vimeo.com/879175351#t=2m22s)
+* [Why Use StagedPipe](https://vimeo.com/879175351#t=5m28s)
+* [StagedPipe Hello World](https://vimeo.com/879175351#t=9m28s)
 
 # For Those That Don't Watch Videos
 
