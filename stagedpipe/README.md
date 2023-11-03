@@ -11,11 +11,14 @@ We support:
 * Data can be on the stack or the heap
 * Retrieve Stats on how the pipeline is running
 * Route requests to different stages depending on data
+* Allow routing to route back to a stage or setup the pipeline as a Directed Acyllic Graph (DAG)
 * Cancelation of a set of requests on an error or ignore errors
 
 Here is a brief introduction to standard Go pipelining, standard Go state machines and a hello world for the stagedpipe framework:
 
 [![Introduction Video](https://i.vimeocdn.com/video/1745567750-9b634f58614db8361e28cac2a9f77cca99923c16afd05ce112cbf506a5722656-d_640?f=webp)](https://player.vimeo.com/video/879175351?badge=0&amp;autopause=0&amp;quality_selector=1&amp;player_id=0&amp;app_id=58479)
+
+Chapters Links:
 
 * [Introduction](https://vimeo.com//879175351)
 * [Basic Go Pipelines](https://vimeo.com/879175351#t=0m16s)
@@ -75,7 +78,7 @@ Something to watch out for:
 * If your data object uses the stack, remember the stack use is not visible in pprof memory traces
         * This can be a big gotcha if you get `OOM` messages and are expecting to see it in the graphs
 * Dialing up parallelism can make things slower if you are bound by disk (like talking to the filesystem or a database) or network IO limited
-        * This works best when doing things in memory or the database can horizontally scale to keep up with demand
+        * This works best when doing everything is in memory or the data store can horizontally scale to keep up with demand
  
 # Building an ETL Pipeline from Scratch
 
@@ -114,11 +117,9 @@ Note: Nothing here is a criticism of Pike or his talks/methods/etc. In a more co
 
 ## The First Problem
 
-In simple pipelines with few stages, this is pretty easy. In complex pipelines, you end up with a bunch of channels and go routines. When you add to the pipeline after you haven't looked at the code in a few months, you forget to call `make(chan X)` in your constructor, which causes a deadlock. You fix that, but you forgot to call `go p.stage()`, which caused another deadlock. You have lots of ugly channels and the code is brittle.
+In simple pipelines with few stages, writing a pipeline is pretty easy. In complex pipelines, you end up with a bunch of channels and go routines. When you add to the pipeline after you haven't looked at the code in a few months, you forget to call `make(chan X)` in your constructor, which causes a deadlock. You fix that, but you forgot to call `go p.stage()`, which caused another deadlock. This tends to make the code brittle.
 
-You try to deal with that by making each stage its own file with its own `struct` and piecing them all together with a `Register(stage)` that takes care of the setup for you.
-
-That works, but it lacks the beauty of just scrolling from stage to state in a single file.
+There are certainly other methods to deal with this, but they usually lack the beauty of just looking through the stages in a single file that makes it really easy to read.
 
 ## The Second Problem
 

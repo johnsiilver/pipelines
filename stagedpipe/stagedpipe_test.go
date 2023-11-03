@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -269,5 +270,118 @@ func BenchmarkPipeline(b *testing.B) {
 			}
 		}
 		g.Close()
+	}
+}
+
+type DAGData struct {
+	Num int
+}
+
+type DAGSM struct{}
+
+func (d *DAGSM) Close() {}
+
+func (d *DAGSM) Start(req stagedpipe.Request[DAGData]) stagedpipe.Request[DAGData] {
+	if req.Data.Num%2 == 0 {
+		req.Next = d.RouteBackToStart
+		return req
+	}
+	req.Next = d.End
+	return req
+}
+
+func (d *DAGSM) RouteBackToStart(req stagedpipe.Request[DAGData]) stagedpipe.Request[DAGData] {
+	req.Next = d.Start
+	return req
+}
+
+func (d *DAGSM) End(req stagedpipe.Request[DAGData]) stagedpipe.Request[DAGData] {
+	req.Next = nil
+	return req
+}
+
+func TestDAG(t *testing.T) {
+	t.Parallel()
+
+	sm := &DAGSM{}
+	p, err := stagedpipe.New[DAGData](
+		"test statemachine",
+		10,
+		sm,
+		stagedpipe.DAG[DAGData](),
+	)
+
+	if err != nil {
+		panic(err)
+	}
+	defer p.Close()
+
+	rg := p.NewRequestGroup()
+	reqCtx, reqCancel := context.WithCancel(context.Background())
+	defer reqCancel()
+
+	done := make(chan error, 1)
+	got := []stagedpipe.Request[DAGData]{}
+
+	go func() {
+		defer close(done)
+
+		for out := range rg.Out() {
+			got = append(got, out)
+		}
+	}()
+
+	requests := []stagedpipe.Request[DAGData]{
+		{Data: DAGData{Num: 0}},
+		{Data: DAGData{Num: 1}},
+		{Data: DAGData{Num: 2}},
+		{Data: DAGData{Num: 3}},
+	}
+
+	for _, req := range requests {
+		if req.Err != nil {
+			if req.Err == context.Canceled {
+				log.Println("received context.Canceled")
+				break
+			}
+			log.Fatalf("problem reading request block: %s", req.Err)
+		}
+		req.Ctx = reqCtx
+		if err := rg.Submit(req); err != nil {
+			t.Logf("problem submitting request to pipeline: %s", err)
+		}
+	}
+	// Tell the pipeline that this request group is done.
+	rg.Close()
+
+	// We have processed all output.
+	<-done
+
+	expected := []stagedpipe.Request[DAGData]{
+		{Data: DAGData{Num: 0}, Err: stagedpipe.ErrCyclic},
+		{Data: DAGData{Num: 1}},
+		{Data: DAGData{Num: 2}, Err: stagedpipe.ErrCyclic},
+		{Data: DAGData{Num: 3}},
+	}
+
+	sort.Slice(got, func(i, j int) bool {
+		return got[i].Data.Num < got[j].Data.Num
+	})
+
+	if len(expected) != len(got) {
+		t.Fatalf("got %d, want %d", len(got), len(expected))
+	}
+
+	for _, rec := range got {
+		fmt.Println(rec.Data.Num)
+	}
+
+	for i := 0; i < len(expected); i++ {
+		if expected[i].Data.Num != got[i].Data.Num {
+			t.Errorf("got %d, want %d", got[i].Data.Num, expected[i].Data.Num)
+		}
+		if expected[i].Err != got[i].Err {
+			t.Errorf("request %d, got %q, want %q", expected[i].Data.Num, got[i].Err, expected[i].Err)
+		}
 	}
 }

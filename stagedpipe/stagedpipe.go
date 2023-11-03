@@ -211,6 +211,7 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -219,8 +220,48 @@ import (
 	"github.com/johnsiilver/dynamics/method"
 )
 
+// ErrCyclic is returned when a cyclic error is detected. A cyclic error is when
+// a stage is called more than once in a single Request. This is only returned
+// if the DAG() option is set.
+var ErrCyclic = errors.New("cyclic error")
+
+// IsErrCyclic returns true if the error is a cyclic error.
+func IsErrCyclic(err error) bool {
+	return errors.Is(err, ErrCyclic)
+}
+
+var seenStagesPool = sync.Pool{
+	New: func() any {
+		return &seenStages{}
+	},
+}
+
+type seenStages []string
+
+func (s *seenStages) seen(stage string) bool {
+	log.Printf("seenStages.seen(): %s", stage)
+	for _, st := range *s {
+		if st == stage {
+			log.Println(true)
+			return true
+		}
+	}
+
+	n := append(*s, stage)
+	*s = n
+	log.Println(false)
+	return false
+}
+
+func (s *seenStages) reset() *seenStages {
+	n := (*s)[:0]
+	s = &n
+	return s
+}
+
 // Requests is a Request to be processed by a pipeline.
 type Request[T any] struct {
+	// queueTime and ingestTime hold the times when the Request was queued and ingested.
 	queueTime, ingestTime time.Time
 
 	// Ctx is a Context scoped for this requestor set of requests.
@@ -238,6 +279,10 @@ type Request[T any] struct {
 	// Next is the next stage to be executed. Must be set at each stage of a StateMachine.
 	// If set to nil, exits the pipeline.
 	Next Stage[T]
+
+	// seenStages tracks what stages have been called in this Request. This is used to
+	// detect cyclic errors. If nil, cyclic errors are not checked.
+	seenStages *seenStages
 
 	// groupNum is used to track what RequestGroup this Request belongs to for routing.
 	groupNum uint64
@@ -280,10 +325,21 @@ type Pipelines[T any] struct {
 	demux           *demux.Demux[uint64, Request[T]]
 
 	stats *stats
+	ss    bool
 }
 
 // Option is an option for the New() constructor.
 type Option[T any] func(p *Pipelines[T]) error
+
+// DAG makes the StateMachine a Directed Acyllic Graph. This means that no Stage
+// can be called more than once in a single Request. If a Stage is called more than
+// once, the request will exit with a ErrCyclic.
+func DAG[T any]() Option[T] {
+	return func(p *Pipelines[T]) error {
+		p.ss = true
+		return nil
+	}
+}
 
 // PreProcessors provides a set of functions that are called in order
 // at each stage in the StateMachine. This is used to do work that is common to
@@ -390,6 +446,7 @@ func New[T any](name string, num int, sm StateMachine[T], options ...Option[T]) 
 			preProcessors: p.preProcessors,
 			stats:         stats,
 			delayWarning:  p.delayWarning,
+			ss:            p.ss,
 		}
 
 		_, err := newPipeline(args)
@@ -511,6 +568,7 @@ type pipeline[T any] struct {
 	sm            StateMachine[T]
 	preProcessors []PreProcesor[T]
 
+	ss    bool
 	stats *stats
 
 	in           chan Request[T]
@@ -524,6 +582,7 @@ type pipelineArgs[T any] struct {
 	in            chan Request[T]
 	out           chan Request[T]
 	stats         *stats
+	ss            bool
 	name          string
 	preProcessors []PreProcesor[T]
 	id            int
@@ -543,6 +602,7 @@ func newPipeline[T any](args pipelineArgs[T]) (*pipeline[T], error) {
 		preProcessors: args.preProcessors,
 		stats:         args.stats,
 		sm:            args.sm,
+		ss:            args.ss,
 		delayWarning:  args.delayWarning,
 	}
 
@@ -591,6 +651,13 @@ func (p *pipeline[T]) processReq(r Request[T]) Request[T] {
 	// Stat colllection.
 	r.ingestTime = time.Now()
 	queuedTime := time.Since(r.queueTime)
+	if p.ss {
+		r.seenStages = seenStagesPool.Get().(*seenStages).reset()
+		defer func() {
+			seenStagesPool.Put(r.seenStages)
+			r.seenStages = nil
+		}()
+	}
 
 	p.stats.running.Add(1)
 	setMin(&p.stats.ingestStats.min, int64(queuedTime))
@@ -606,6 +673,13 @@ func (p *pipeline[T]) processReq(r Request[T]) Request[T] {
 		if r.Ctx.Err() != nil {
 			r.Err = r.Ctx.Err()
 			return r
+		}
+
+		if r.seenStages != nil {
+			if r.seenStages.seen(methodName(stage)) {
+				r.Err = ErrCyclic
+				return r
+			}
 		}
 
 		for _, pp := range p.preProcessors {
@@ -645,4 +719,8 @@ func numStages[T any](sm any) int {
 		count++
 	}
 	return count
+}
+
+func methodName(method any) string {
+	return runtime.FuncForPC(reflect.ValueOf(method).Pointer()).Name()
 }
