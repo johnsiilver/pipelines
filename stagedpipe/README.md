@@ -1,7 +1,7 @@
 # StagedPipe - The Concurrent and Parallel Pipeline Framework
 
 [![GoDoc](https://godoc.org/github.com/johnsiilver/pipelines/stagedpipe?status.svg)](https://pkg.go.dev/github.com/johnsiilver/pipelines/stagedpipe)
-[![Go Report Card](https://goreportcard.com/badge/github.com/johnsiilver/pipelines/stagedpipe)](https://goreportcard.com/report/github.com/johnsiilver/pipelines/stagedpipe)
+[![Go Report Card](https://goreportcard.com/badge/github.com/johnsiilver/pipelines)](https://goreportcard.com/report/github.com/johnsiilver/pipelines)
 
 ## Introduction
 

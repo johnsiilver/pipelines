@@ -21,7 +21,7 @@ type StateMachine interface {
 type Request struct {
 	// Ctx is the context for this request.
 	Ctx context.Context
-	// Err is used to store an error that occured in the Pipeline.
+	// Err is used to store an error that occurred in the Pipeline.
 	// If Err is set in any Stage, everything stops processing.
 	Err error
 	// Next is the next Stage to execute. If set to nil, processing stops.

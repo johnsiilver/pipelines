@@ -1,4 +1,4 @@
-// Package queue provides a simple queue primative that blocks on Pop() until an
+// Package queue provides a simple queue primitive that blocks on Pop() until an
 // entry is available and can block on Push() when a size limit is applied.
 package queue
 

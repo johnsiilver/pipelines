@@ -29,7 +29,7 @@ import (
 )
 
 // SM implements stagedpipe.StateMachine. It holds all our states for the pipeline.
-type SM struct {}
+type SM struct{}
 
 // NewSM creates a new stagepipe.StateMachine from SM. db is used to create a
 // transaction.

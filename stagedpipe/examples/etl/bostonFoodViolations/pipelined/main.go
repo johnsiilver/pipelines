@@ -94,7 +94,7 @@ func main() {
 
 	start := time.Now()
 
-	// Gets all the ouput from the pipeline and checks for errors. We don't use
+	// Gets all the output from the pipeline and checks for errors. We don't use
 	// any of the output otherwise, as the pipeline writes the data to the database.
 	done := make(chan error, 1)
 	go func() {
@@ -155,7 +155,7 @@ func main() {
 	}
 	fmt.Println("Pipeline has completed processing")
 	fmt.Printf("Processed %d records into Postgres\n", items)
-	fmt.Println("Commiting Transaction to Postgres...")
+	fmt.Println("Committing Transaction to Postgres...")
 
 	if err := tx.Commit(ctx); err != nil {
 		log.Fatalf("transaction commit failure: %s", err)
