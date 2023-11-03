@@ -1,4 +1,9 @@
-# Introduction
+# StagedPipe - The Concurrent and Parallel Pipeline Framework
+
+[![GoDoc](https://godoc.org/github.com/johnsiilver/pipelines/stagedpipe?status.svg)](https://pkg.go.dev/github.com/johnsiilver/pipelines/stagedpipe)
+[![Go Report Card](https://goreportcard.com/badge/github.com/johnsiilver/pipelines/stagedpipe)](https://goreportcard.com/report/github.com/johnsiilver/pipelines/stagedpipe)
+
+## Introduction
 
 Pipelining in Go can be hard to debug and can end up a little messy. Stagepipe combines semantics of Go state machines and Go pipelining to give you an efficient and easy to use pipeline framework. 
 
@@ -26,7 +31,7 @@ Chapters Links:
 * [Why Use StagedPipe](https://vimeo.com/879175351#t=5m28s)
 * [StagedPipe Hello World](https://vimeo.com/879175351#t=9m28s)
 
-# Just jump in
+## Just jump in
 
 This is for those of you that simply want to hit the ground running and aren't interested in a video introduction.
 
@@ -58,7 +63,7 @@ Type `go run .` to run the basic pipeline that you can change to fit your needs.
 
 See the comments in the file to see how to modify and extend the example pipeline for your needs.
 
-# Basics and Best Practices
+## Basics and Best Practices
 
 Here are the basics, if you've built off of the stagedpipe-cli skeleton code:
 
@@ -80,7 +85,7 @@ Something to watch out for:
 * Dialing up parallelism can make things slower if you are bound by disk (like talking to the filesystem or a database) or network IO limited
         * This works best when doing everything is in memory or the data store can horizontally scale to keep up with demand
  
-# Building an ETL Pipeline from Scratch
+## Building an ETL Pipeline from Scratch
 
 Ardan Labs has a great [tutorial](https://www.ardanlabs.com/blog/2021/09/extract-transform-load-in-go.html) on building a basic ETL pipeline in Go. With their permission, I have re-written their example using the stagedpipe framework. 
 
@@ -94,7 +99,7 @@ Code for our modified version of Ardan Labs code and our version can be found [h
 
 [![ETL Video](https://i.vimeocdn.com/video/1745612616-fbd27ad348e812476577b0d5866b3787dd1ce8821f110c977bfe14022a6a0b26-d_640?f=webp)](https://player.vimeo.com/video/879203973?h=24035c0a82)
 
-# The Common Pipeline Pattern
+## The Common Pipeline Pattern
 
 Golang standard Pipelines work using the concurrency model layed out in Rob Pike's talk on [Concurrency in not Parallelism](https://www.youtube.com/watch?v=oV9rvDllKEg).  
 
@@ -115,13 +120,13 @@ Stages pass data through the pipeline through a series of channels. Pike also of
 
 Note: Nothing here is a criticism of Pike or his talks/methods/etc. In a more complex pipeline, I'm sure he would alter this method to control the complexity. If anything, over the years I have learned so much by taking ideas from him and hammering them into successful packages. This package uses two of his ideas together to make something I find easy to use and fast.
 
-## The First Problem
+### The First Problem
 
 In simple pipelines with few stages, writing a pipeline is pretty easy. In complex pipelines, you end up with a bunch of channels and go routines. When you add to the pipeline after you haven't looked at the code in a few months, you forget to call `make(chan X)` in your constructor, which causes a deadlock. You fix that, but you forgot to call `go p.stage()`, which caused another deadlock. This tends to make the code brittle.
 
 There are certainly other methods to deal with this, but they usually lack the beauty of just looking through the stages in a single file that makes it really easy to read.
 
-## The Second Problem
+### The Second Problem
 
 The standard type of pipelining also works great in two scenarios:
 * Everything that goes through the Pipeline is related
@@ -133,7 +138,7 @@ In the second scenario, you can keep open the pipeline for the life of the progr
 
 But what if you want to keep your pipelines running and have multiple ingress streams that each need to be routed to their individual output streams?  The pipeline models above break down, either requiring each stream to have its own pipelines (which wastes resources), bulk requests that eat a lot of memory, or other unsavory methods.
 
-## This Solution
+### This Solution
 
 I hate to say "the solution", because there are many ways you can solve this. But I was looking to create a framework that was elegant in how it handled this.
 
