@@ -77,11 +77,13 @@ Ardan Labs has a great [tutorial](https://www.ardanlabs.com/blog/2021/09/extract
 
 This lesson takes about 30 minutes and I build the pipeline from scratch without using the `stagedpipe-cli` tool, so it takes longer that normal. I use a local postgres server to store data in, so if you want to follow this you will need one too.
 
+Using the `stagedpipe-cli` removes a lot of the boilerplate here, but this is a good opportunity to explain what each of the boilerplate types and functions do.
 
-[![ETL Video](https://i.vimeocdn.com/video/1745612616-fbd27ad348e812476577b0d5866b3787dd1ce8821f110c977bfe14022a6a0b26-d_640?f=webp)](https://player.vimeo.com/video/879203973?h=24035c0a82)
+You can download the dataset uses in this example [here](https://data.boston.gov/dataset/food-establishment-inspections)
 
 Code for our modified version of Ardan Labs code and our version can be found [here](https://github.com/johnsiilver/pipelines/tree/main/stagedpipe/examples/etl/bostonFoodViolations)
 
+[![ETL Video](https://i.vimeocdn.com/video/1745612616-fbd27ad348e812476577b0d5866b3787dd1ce8821f110c977bfe14022a6a0b26-d_640?f=webp)](https://player.vimeo.com/video/879203973?h=24035c0a82)
 
 # The Common Pipeline Pattern
 
