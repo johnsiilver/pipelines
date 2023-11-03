@@ -221,6 +221,8 @@ import (
 
 // Requests is a Request to be processed by a pipeline.
 type Request[T any] struct {
+	queueTime, ingestTime time.Time
+
 	// Ctx is a Context scoped for this requestor set of requests.
 	Ctx context.Context
 
@@ -239,8 +241,6 @@ type Request[T any] struct {
 
 	// groupNum is used to track what RequestGroup this Request belongs to for routing.
 	groupNum uint64
-
-	queueTime, ingestTime time.Time
 }
 
 // StateMachine represents a state machine where the methods that implement Stage

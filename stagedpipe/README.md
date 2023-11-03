@@ -1,21 +1,27 @@
 # Introduction
 
-Pipelining in Go can be hard to debug and can end up a little messy. Stagepipe combines semantics of Go state machines and Go pipelining to give you an efficient and easy to pipeline. 
+Pipelining in Go can be hard to debug and can end up a little messy. Stagepipe combines semantics of Go state machines and Go pipelining to give you an efficient and easy to use pipeline framework. 
 
 We support:
 
 * A concurrent pipeline that can be run in parallel
-* Multiple users can use a single set of pipelines
-* No need to run your own goroutines, simply scale up
-* Generic, so no runtime analysis of data objects
+* Multiple users can use a single set of pipelines, not a pipeline setup per user
+* No need to run your own goroutines, simply scale up parallelism
+* Generic, so it avoids runtime type checks of data objects
 * Data can be on the stack or the heap
-* Stats on the pipeline
+* Retrieve Stats on how the pipeline is running
 * Route requests to different stages depending on data
 * Cancelation of a set of requests on an error or ignore errors
 
 Here is a brief introduction to standard Go pipelining, standard Go state machines and a hello world for the stagedpipe framework:
 
 [![Introduction Video](https://i.vimeocdn.com/video/1745567750-9b634f58614db8361e28cac2a9f77cca99923c16afd05ce112cbf506a5722656-d_640?f=webp)](https://player.vimeo.com/video/879175351?badge=0&amp;autopause=0&amp;quality_selector=1&amp;player_id=0&amp;app_id=58479)
+
+* [Introduction](https://vimeo.com/manage/videos/879175351)
+* [Basic Go Pipelines](https://vimeo.com/manage/videos/879175351#t=0m16s)
+* [Basic Go State Machines](https://vimeo.com/manage/videos/879175351#t=2m22s)
+* [Why Use StagedPipe](https://vimeo.com/manage/videos/879175351#t=5m28s)
+* [StagedPipe Hello World](https://vimeo.com/manage/videos/879175351#t=9m28s)
 
 # For Those That Don't Watch Videos
 
