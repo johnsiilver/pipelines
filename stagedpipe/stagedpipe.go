@@ -212,6 +212,7 @@ import (
 	"log"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -220,14 +221,36 @@ import (
 	"github.com/johnsiilver/dynamics/method"
 )
 
-// ErrCyclic is returned when a cyclic error is detected. A cyclic error is when
+const (
+	cyclicErr = "cyclic"
+)
+
+// Error represents a typed error that this package can return.
+// Not all errors are of this type.
+type Error struct {
+	// Type is the type of error.
+	Type string
+	// Msg is the message of the error.
+	Msg string
+}
+
+// Error returns the Error type and message.
+func (e Error) Error() string {
+	return fmt.Sprintf("%s: %s", e.Type, e.Msg)
+}
+
+// IsErrCyclic returns true if the error is a cyclic error. A cyclic error is when
 // a stage is called more than once in a single Request. This is only returned
 // if the DAG() option is set.
-var ErrCyclic = errors.New("cyclic error")
-
-// IsErrCyclic returns true if the error is a cyclic error.
 func IsErrCyclic(err error) bool {
-	return errors.Is(err, ErrCyclic)
+	if err == nil {
+		return false
+	}
+	t, ok := err.(Error)
+	if !ok {
+		return false
+	}
+	return t.Type == cyclicErr
 }
 
 var seenStagesPool = sync.Pool{
@@ -251,6 +274,17 @@ func (s *seenStages) seen(stage string) bool {
 	*s = n
 	log.Println(false)
 	return false
+}
+
+func (s *seenStages) callTrace() string {
+	out := strings.Builder{}
+	for i, st := range *s {
+		if i != 0 {
+			out.WriteString(" -> ")
+		}
+		out.WriteString(st)
+	}
+	return out.String()
 }
 
 func (s *seenStages) reset() *seenStages {
@@ -333,7 +367,7 @@ type Option[T any] func(p *Pipelines[T]) error
 
 // DAG makes the StateMachine a Directed Acyllic Graph. This means that no Stage
 // can be called more than once in a single Request. If a Stage is called more than
-// once, the request will exit with a ErrCyclic.
+// once, the request will exit with a cyclic error that can be detected with IsErrCyclic().
 func DAG[T any]() Option[T] {
 	return func(p *Pipelines[T]) error {
 		p.ss = true
@@ -677,7 +711,7 @@ func (p *pipeline[T]) processReq(r Request[T]) Request[T] {
 
 		if r.seenStages != nil {
 			if r.seenStages.seen(methodName(stage)) {
-				r.Err = ErrCyclic
+				r.Err = Error{Type: cyclicErr, Msg: r.seenStages.callTrace()}
 				return r
 			}
 		}

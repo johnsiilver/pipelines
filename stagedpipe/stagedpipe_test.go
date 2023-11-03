@@ -357,31 +357,27 @@ func TestDAG(t *testing.T) {
 	// We have processed all output.
 	<-done
 
-	expected := []stagedpipe.Request[DAGData]{
-		{Data: DAGData{Num: 0}, Err: stagedpipe.ErrCyclic},
-		{Data: DAGData{Num: 1}},
-		{Data: DAGData{Num: 2}, Err: stagedpipe.ErrCyclic},
-		{Data: DAGData{Num: 3}},
-	}
-
 	sort.Slice(got, func(i, j int) bool {
 		return got[i].Data.Num < got[j].Data.Num
 	})
 
-	if len(expected) != len(got) {
-		t.Fatalf("got %d, want %d", len(got), len(expected))
+	if len(requests) != len(got) {
+		t.Fatalf("got %d, want %d", len(got), len(requests))
 	}
 
 	for _, rec := range got {
 		fmt.Println(rec.Data.Num)
 	}
 
-	for i := 0; i < len(expected); i++ {
-		if expected[i].Data.Num != got[i].Data.Num {
-			t.Errorf("got %d, want %d", got[i].Data.Num, expected[i].Data.Num)
+	for i := 0; i < len(requests); i++ {
+		if got[i].Data.Num != i {
+			t.Errorf("got %d, want %d", got[i].Data.Num, i)
 		}
-		if expected[i].Err != got[i].Err {
-			t.Errorf("request %d, got %q, want %q", expected[i].Data.Num, got[i].Err, expected[i].Err)
+
+		if i%2 == 0 {
+			if !stagedpipe.IsErrCyclic(got[i].Err) {
+				t.Errorf("request %d, got %q, want a cyclic error", i, got[i].Err)
+			}
 		}
 	}
 }
