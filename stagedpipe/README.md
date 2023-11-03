@@ -2,7 +2,7 @@
 
 Pipelining in Go can be hard to debug and can end up a little messy. Stagepipe combines semantics of Go state machines and Go pipelining to give you an efficient and easy to use pipeline framework. 
 
-We support:
+This package supports:
 
 * A concurrent pipeline that can be run in parallel
 * Multiple users can use a single set of pipelines, not a pipeline setup per user
@@ -11,7 +11,7 @@ We support:
 * Data can be on the stack or the heap
 * Retrieve Stats on how the pipeline is running
 * Route requests to different stages depending on data
-* Allow routing to route back to a stage or setup the pipeline as a Directed Acyllic Graph (DAG)
+* Allow routing to route back to a stage or setup the pipeline as a Directed Acyllic Graph (DAG) to avoid loops
 * Cancelation of a set of requests on an error or ignore errors
 
 Here is a brief introduction to standard Go pipelining, standard Go state machines and a hello world for the stagedpipe framework:
@@ -26,9 +26,9 @@ Chapters Links:
 * [Why Use StagedPipe](https://vimeo.com/879175351#t=5m28s)
 * [StagedPipe Hello World](https://vimeo.com/879175351#t=9m28s)
 
-# For Those That Don't Watch Videos
+# Just jump in
 
-Many of you may not want to watch the videos and prefer a guide.  
+This is for those of you that simply want to hit the ground running and aren't interested in a video introduction.
 
 To help get you started, we have a `tools/` directory containing the `stagedpipe-cli`.  This allows you to generate all the structure that is required to implement a pipeline.
 

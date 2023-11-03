@@ -7,10 +7,8 @@ with N Stages will have X*N Stages processing.
 This library requires working knowledge of both the specific type of Go statemachine
 implementation and basic Go pipelining.
 
-You can view the statemachine concepts here: https://www.youtube.com/watch?v=HxaD_trXwRE .
-You can ignore how the parser works he is implementing.
-
-You can see basic Go pipelining here: https://www.youtube.com/watch?v=oV9rvDllKEg .
+Full introduction including a hello world example can be found here:
+https://vimeo.com/879175351?share=copy
 
 Every pipeline will receive a Request, which contains the data to be manipulated.
 Each Request is designed to be stack allocated, meaning the data should not be a pointer
@@ -31,177 +29,43 @@ Multiple RequestGroup(s) can send into the Pipelines for processing, as everythi
 muxed into the Pipelines and demuxed out to the RequestGroup.Out() channel.
 
 There is a provided CLI application called `stagedpipe-cli“ located in the `tools/` directory
-that can be used to generate all the boilerplate you see below for a working example.
+that can be used to generate all the boilerplate you see below for a working example.  You can
+install it like this:
 
-Here is an example (you can run it here: https://go.dev/play/p/ZOUzWgRb1oh:
+```
+go install github.com/johnsiilver/pipelines/stagedpipe/tools/stagedpipe-cli@latest
+```
+Simply enter into your new package's directory, and type: `stagedpipe-cli -m -p "[package root]/sm"` to get:
 
-	// Data is the data we will pass on a Request into our Pipelines. We could pass
-	// just []client.Record, but after using this package in practice it was found
-	// that using a Struct wrapper that could be expanded is a best practice that
-	// can save hours of pipeline and test restructure. By convention, we call this
-	// Data.
-	type Data struct {
-		Records []client.Record
-	}
+```
+├──myPipeline
 
-	// NewRequest returns a new stagedpipe.Request object for use in the Pipelines.
-	// By convention we always have NewRequest() function.  If NewRequest can return
-	// an error, we also include a MustNewRequest().
-	func NewRequest(ctx context.Context, data Data) stagedpipe.Request[Data] {
-		return stagedpipe.Request[Data]{
-			Ctx:  ctx,
-			Data: data,
-		}
-	}
+	├── main.go
+	└──sm
+	    ├── data.go
+	    └── sm.go
 
-	// SM implements stagedpipe.StateMachine. It holds all our states for the pipeline.
-	type SM struct {
-		// idClient is a client for querying for information based on an ID.
-		idClient *client.ID
-	}
+```
+Run `go mod init <path>`, `go mod tidy` and `go fmt ./...`, to get a running program:
+```
+├──myPipeline
 
-	// NewSM creates a new stagepipe.StateMachine from SM.
-	func NewSM(cli *client.ID) *SM {
-		sm := &SM{
-			idClient: cli,
-		}
-		return sm
-	}
+	├── go.mod
+	├── go.sum
+	├── main.go
+	└──sm
+	    ├── data.go
+	    └── sm.go
 
-	// Close implements stagedpipe.StateMachine.Close(). It shuts down resources in the
-	// StateMachine that are no longer needed. This is only safe after all entries
-	// have been processed.
-	func (s *SM) Close() {
-		//We don't need to do anything
-	}
+```
 
-	// Start implements stagedpipe.StateMachine.Start(). It accepts a Request and
-	// does some fixes on the names and ID to remove spaces
-	// and then sends it on to the IDVerifier stage.
-	func (s *SM) Start(req stagedpipe.Request[Data]) stagedpipe.Request[Data] {
-		for i, rec := range req.Data.Records {
-			// This trims any excess space off of some string attributes.
-			rec.First = strings.TrimSpace(rec.First)
-			rec.Last = strings.TrimSpace(rec.Last)
-			rec.ID = strings.TrimSpace(rec.ID)
+Type `go run .` to run the basic pipeline that you can change to fit your needs.
 
-			switch {
-			case rec.First == "":
-				req.Err = fmt.Errorf("Record.First cannot be empty")
-				return req
-			case rec.Last == "":
-				req.Err = fmt.Errorf("Record.Last cannot be empty")
-				return req
-			case rec.ID == "":
-				req.Err = fmt.Errorf("Record.ID cannot be empty")
-				return req
-			}
-			req.Data.Records[i] = rec
-		}
+Here is an example that runs inside the playground: https://go.dev/play/p/zaiNU_kbp6_3
 
-		req.Next = s.IdVerifier // Next Stage to go to.
-		return req
-	}
+Here is an ETL pipeline example: https://github.com/johnsiilver/pipelines/tree/main/stagedpipe/examples/etl/bostonFoodViolations/pipelined
 
-	// IdVerifier is a stage takes a Request and adds it to a request to be sent to the
-	// identity service. This is the last stage of this pipeline.
-	func (s *SM) IdVerifier(req stagedpipe.Request[Data]) stagedpipe.Request[Data] {
-		ctx, cancel := context.WithTimeout(req.Ctx, 2*time.Second)
-		defer cancel()
-
-		recs, err := s.idClient.Call(ctx, req.Data.Records)
-		if err != nil {
-			req.Err = err
-			return req
-		}
-		req.Data.Records = recs
-
-		req.Next = nil // Signifies there are no more stages.
-		return req
-	}
-
-	// RunPipline creates and starts 10 Pipelines using our StateMachine "SM" defined above.
-	// Because there are 2 stages, 2 * 10 goroutines will be created.
-	func RunPipeline() (*stagedpipe.Pipelines[Data], error) {
-		sm := NewSM(&client.ID{})
-		return stagedpipe.New("example pipeline", 10, stagedpipe.StateMachine[Data](sm))
-	}
-
-Above is a pipeline that takes in requests that contain user records, cleans up the
-records, and calls out to a identity service (faked) to get birth information.
-
-To run the pipeline above is simple:
-
-	func main() {
-		// Setup our pipelines.
-		p, err := RunPipeline()
-		if err != nil {
-			panic(err)
-		}
-		defer p.Close()
-
-		// Make a new RequestGroup that to send requests on.
-		g := p.NewRequestGroup()
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		// Start processing output that will be read in and write it to our Database(faked).
-		go func() {
-			for req := range g.Out() {
-				if req.Err != nil {
-					cancel()
-					g.Close()
-					continue
-				}
-				WriteToDB(req.Data.Records)
-			}
-		}()
-
-		// Read all the data from some source and send it into the pipeline.
-		for recs := range ReadDataFromSource() {
-			if ctx.Err() != nil {
-				break
-			}
-			if err := g.Submit(NewRequest(ctx, Data{Records: recs})); err != nil {
-				cancel()
-				g.Close()
-				panic(err)
-			}
-		}
-		g.Close()
-	}
-
-	// WriteToDB is just a standin for writing output to a DB.
-	func WriteToDB(recs []client.Record) {
-		for _, rec := range recs {
-			log.Printf("Wrote: %+v", rec)
-		}
-	}
-
-	// ReadDataFromSource is just a standin for some storage of data (disk, RPC, DB).
-	func ReadDataFromSource() chan []client.Record {
-		ch := make(chan []client.Record, 1)
-		go func() {
-			defer close(ch)
-
-			nameGenerator := namegenerator.NewNameGenerator(time.Now().UTC().UnixNano())
-
-			idSrc := 0
-			for i := 0; i < 100; i++ {
-				recs := []client.Record{}
-				for x := 0; x < 100; x++ {
-					id := strconv.Itoa(idSrc)
-					idSrc++
-					rec := client.Record{First: nameGenerator.Generate(), Last: nameGenerator.Generate(), ID: id}
-					recs = append(recs, rec)
-				}
-				ch <- recs
-			}
-		}()
-
-		return ch
-	}
+A video introduciton to the ETL pipeline: https://player.vimeo.com/video/879203973?h=24035c0a82
 */
 package stagedpipe
 
