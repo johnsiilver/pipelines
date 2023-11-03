@@ -7,7 +7,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -157,37 +156,38 @@ func TestPipelines(t *testing.T) {
 	defer p.Close()
 
 	for _, test := range tests {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
 		rg := p.NewRequestGroup()
+		reqCtx, reqCancel := context.WithCancel(context.Background())
+		defer reqCancel()
+
 		expectedRecs := make([]bool, len(test.requests)*10)
 
-		hadErr := atomic.Pointer[error]{}
+		done := make(chan error, 1)
 		go func() {
-			ch := rg.Out()
-			tick := time.NewTicker(10 * time.Second)
-			sawErr := false
-			for {
-				select {
-				case req, ok := <-ch:
-					if !ok { // channel is closed
-						log.Println("channel closed")
-						return
-					}
-					if req.Err != nil {
-						cancel()
-						if req.Err != context.Canceled {
-							log.Println("stored error")
-							hadErr.Store(&req.Err)
-						}
-						sawErr = true
-					}
-					if sawErr {
-						log.Println("receiver saw error")
-						continue
-					}
-					for _, rec := range req.Data {
+			var err error
+			defer func() {
+				defer close(done)
+				if err != nil {
+					done <- err
+				}
+			}()
+
+			// A RequestGroup must always drain its .Out() channel. If we receive an error and
+			// want to stop processing, we can cancel the Context and wait for everything to stop.
+			// Here we capture the error so that we can report it. If we get an error, we also
+			// rollback the transaction.
+			for out := range rg.Out() {
+				if err != nil {
+					continue
+				}
+				if out.Err != nil {
+					reqCancel()
+					err = out.Err
+					log.Printf("pipeline had error in stream: %s", out.Err)
+				}
+
+				for _, rec := range out.Data {
+					if !test.err {
 						id, _ := strconv.Atoi(rec.ID)
 						expectedRecs[id-1] = true
 						if rec.Birth.IsZero() {
@@ -198,33 +198,35 @@ func TestPipelines(t *testing.T) {
 							log.Fatalf("TestPipeline(%s): requests are not being processed correctly, ID %d gave Birthday of %v, want %v", test.desc, id, rec.Birth, wantBirth)
 						}
 					}
-				case <-tick.C:
-					log.Println("nothing came out after 10 seconds, pipeline is probably stuck")
 				}
-				tick.Reset(10 * time.Second)
 			}
 		}()
 
 		for _, req := range test.requests {
-			req.Ctx = ctx
-			if err := rg.Submit(req); err != nil {
-				if err != context.Canceled {
-					panic(err)
+			if req.Err != nil {
+				if req.Err == context.Canceled {
+					log.Println("received context.Canceled")
+					break
 				}
-				break
+				log.Fatalf("problem reading request block: %s", req.Err)
+			}
+			req.Ctx = reqCtx
+			if err := rg.Submit(req); err != nil {
+				t.Logf("Test(%s): problem submitting request to pipeline: %s", test.desc, err)
 			}
 		}
-		// Wait for all the Record in the RecordSet to finish processing.
-		log.Println("closing input")
+		// Tell the pipeline that this request group is done.
 		rg.Close()
-		log.Println("after")
+
+		// We have processed all output.
+		processingErr := <-done
 
 		switch {
-		case hadErr.Load() == nil && test.err:
+		case processingErr == nil && test.err:
 			t.Errorf("Test(%s): got err == nil, want err != nil", test.desc)
 			continue
-		case hadErr.Load() != nil && !test.err:
-			t.Errorf("Test(%s): got err == %s, want err == nil", test.desc, *hadErr.Load())
+		case processingErr != nil && !test.err:
+			t.Errorf("Test(%s): got err == %s, want err == nil", test.desc, processingErr)
 			continue
 		case test.err:
 			continue
