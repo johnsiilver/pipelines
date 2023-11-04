@@ -10,6 +10,8 @@ implementation and basic Go pipelining.
 Full introduction including a hello world example can be found here:
 https://vimeo.com/879175351?share=copy
 
+Please view the README.md for more detailed information on how to get started.
+
 Every pipeline will receive a Request, which contains the data to be manipulated.
 Each Request is designed to be stack allocated, meaning the data should not be a pointer
 unless absolutely necessary.
