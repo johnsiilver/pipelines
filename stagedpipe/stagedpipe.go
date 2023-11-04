@@ -86,6 +86,7 @@ import (
 )
 
 const (
+	// cyclicErr is the error type for cyclic errors.
 	cyclicErr = "cyclic"
 )
 
@@ -117,14 +118,21 @@ func IsErrCyclic(err error) bool {
 	return t.Type == cyclicErr
 }
 
+// seenStagesPool is a pool of seenStages objects to reduce allocations.
 var seenStagesPool = sync.Pool{
 	New: func() any {
 		return &seenStages{}
 	},
 }
 
+// seenStages tracks what stages have been called in a Request. This is used to detect
+// cyclic errors. Implemented with a slice to reduce allocations and is faster to
+// remove elements from the slice than a map (to allow reuse). n is small, so the
+// lookup performance is negligible. This is not thread-safe (which is not needed).
 type seenStages []string
 
+// seen returns true if the stage has been seen before. If it has not been seen,
+// it adds it to the list of seen stages.
 func (s *seenStages) seen(stage string) bool {
 	log.Printf("seenStages.seen(): %s", stage)
 	for _, st := range *s {
@@ -140,6 +148,7 @@ func (s *seenStages) seen(stage string) bool {
 	return false
 }
 
+// callTrace returns a string of the stages that have been called.
 func (s *seenStages) callTrace() string {
 	out := strings.Builder{}
 	for i, st := range *s {
@@ -151,6 +160,7 @@ func (s *seenStages) callTrace() string {
 	return out.String()
 }
 
+// reset resets the seenStages object to be reused.
 func (s *seenStages) reset() *seenStages {
 	n := (*s)[:0]
 	s = &n
@@ -184,6 +194,8 @@ type Request[T any] struct {
 
 	// groupNum is used to track what RequestGroup this Request belongs to for routing.
 	groupNum uint64
+	// itemNum is used to track the order of the Request in the RequestGroup.
+	itemNum uint64
 }
 
 // StateMachine represents a state machine where the methods that implement Stage
@@ -212,18 +224,28 @@ type Pipelines[T any] struct {
 	pipelines     []*pipeline[T]
 	preProcessors []PreProcesor[T]
 	sm            StateMachine[T]
+
 	// subStages is used to record the number of stages in objects that aren't the
 	// StateMachine.
-	subStages    int
+	subStages int
+	// delayWarning is used to send a log message when pushing entries to the out channel
+	// takes longer than the supplied time.Duration.
 	delayWarning time.Duration
 
+	// wg is used to know when it is safe to close the output channel.
 	wg *sync.WaitGroup
 
+	// requestGroupNum is used to generate the next number for a RequestGroup used to
+	// route requests to the correct RequestGroup.
 	requestGroupNum atomic.Uint64
-	demux           *demux.Demux[uint64, Request[T]]
+	// demux is used to demux the output of the Pipelines to the RequestGroup(s).
+	demux *demux.Demux[uint64, Request[T]]
 
 	stats *stats
-	ss    bool
+	// ss is true if the DAG() option was set.
+	ss bool
+	// ordered is true if the Ordered() option was set.
+	ordered bool
 }
 
 // Option is an option for the New() constructor.
@@ -235,6 +257,16 @@ type Option[T any] func(p *Pipelines[T]) error
 func DAG[T any]() Option[T] {
 	return func(p *Pipelines[T]) error {
 		p.ss = true
+		return nil
+	}
+}
+
+// Ordered makes the Pipelines output requests in the order they are received by a request group.
+// This can slow down output as it stores finished requests until older ones finish processing
+// and are output.
+func Ordered[T any]() Option[T] {
+	return func(p *Pipelines[T]) error {
+		p.ordered = true
 		return nil
 	}
 }
@@ -374,6 +406,10 @@ func (p *Pipelines[T]) Close() {
 // the Pipelines and receive the processed data. This allows multiple callers to
 // multiplex onto the same Pipelines. A RequestGroup is created with Pipelines.NewRequestGroup().
 type RequestGroup[T any] struct {
+	// ordered is used to handle ordering of output when the Ordered() option is set.
+	// If set to nil, the output is not ordered.
+	ordered *demux.InOrder[uint64, Request[T]]
+
 	// out is the channel the demuxer will use to send us output.
 	out chan Request[T]
 	// user is the channel that we give the user to receive output. We do a little
@@ -385,6 +421,9 @@ type RequestGroup[T any] struct {
 	wg sync.WaitGroup
 	// id is the ID of the RequestGroup.
 	id uint64
+
+	// itemNum is used to track the order of the Request in the RequestGroup.
+	itemNum atomic.Uint64
 }
 
 // Close signals that the input is done and will wait for all Request objects to
@@ -404,6 +443,8 @@ func (r *RequestGroup[T]) Submit(req Request[T]) error {
 	}
 
 	req.groupNum = r.id
+	req.itemNum = r.itemNum.Add(1) - 1 // This must start at 0.
+	log.Println("req.itemNum:", req.itemNum)
 	req.queueTime = time.Now()
 
 	// This let's the Pipelines object know it is receiving a new Request to process.
@@ -442,13 +483,32 @@ func (p *Pipelines[T]) NewRequestGroup() *RequestGroup[T] {
 	}
 	p.demux.AddReceiver(id, r.out)
 
-	go func() {
-		defer close(r.user)
-		for req := range r.out {
-			r.wg.Done()
-			r.user <- req
-		}
-	}()
+	// If ordered is set, we need to return the output in order.
+	if p.ordered {
+		r.ordered = demux.NewInOrder(
+			func(r Request[T]) uint64 {
+				return r.itemNum
+			},
+			r.user,
+		)
+		go func() {
+			defer r.ordered.Close()
+			for req := range r.out {
+				r.wg.Done()
+				if err := r.ordered.Add(req); err != nil {
+					panic("bug: ordered demuxer returned an error")
+				}
+			}
+		}()
+	} else { // No output order is required.
+		go func() {
+			defer close(r.user)
+			for req := range r.out {
+				r.wg.Done()
+				r.user <- req
+			}
+		}()
+	}
 
 	return &r
 }

@@ -16,7 +16,8 @@ This package supports:
 * Data can be on the stack or the heap
 * Retrieve Stats on how the pipeline is running
 * Route requests to different stages depending on data
-* Allow routing to route back to a stage or setup the pipeline as a Directed Acyllic Graph (DAG) to avoid loops
+* Allow routing to route back to a stage or setup the pipeline as a Directed Acyllic Graph (DAG) to avoid loops via an option
+* Defaults to out of order processing, but can do in-order processing via an option
 * Cancelation of a set of requests on an error or ignore errors
 
 Here is a brief introduction to standard Go pipelining, standard Go state machines and a hello world for the stagedpipe framework:
