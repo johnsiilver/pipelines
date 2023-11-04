@@ -15,9 +15,7 @@ Each Request is designed to be stack allocated, meaning the data should not be a
 unless absolutely necessary.
 
 You define a StateMachine object that satisfies the StateMachine interface. These states
-represent the stages of the pipeline. A single StateMachine will process a single
-Request at a time, allowing use of your StateMachine's internal objects without mutexes.
-All StateMachine methods that implement a Stage MUST BE PUBLIC.
+represent the stages of the pipeline. All StateMachine methods that implement a Stage MUST BE PUBLIC.
 
 A RequestGroup represents a set of related Request(s) that should be processed together.
 A new RequestGroup can be created with Pipelines.NewRequestGroup().
