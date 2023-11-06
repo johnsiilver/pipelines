@@ -300,7 +300,7 @@ func DelayWarning[T any](d time.Duration) Option[T] {
 // be executed as a single pipeline. CountSubStages is used to correctly calculate
 // the concurrency. Without this, only stages in the StateMachine object will be counted
 // toward the concurrency count.
-func CountSubStages[T any](subStageObj ...T) Option[T] {
+func CountSubStages[T any](subStageObj ...any) Option[T] {
 	return func(pipelines *Pipelines[T]) error {
 		for _, obj := range subStageObj {
 			pipelines.subStages += numStages[T](obj)

@@ -366,7 +366,7 @@ func TestDAG(t *testing.T) {
 	}
 
 	for _, rec := range got {
-		fmt.Println(rec.Data.Num)
+		log.Println(rec.Data.Num)
 	}
 
 	for i := 0; i < len(requests); i++ {
