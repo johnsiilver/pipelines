@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package stagedpipe.distrib.nodes.worker;
+
+option go_package = "github.com/johnsiilver/pipelines/stagedpipe/distrib/nodes/workerproto";
+
+message RequestGroupReq {
+    oneof message {
+        OpenGroupReq open_group = 1;
+        bytes data = 2;
+    }
+}
+
+message OpenGroupReq {
+    // The name of the plugin to open.
+    string plugin = 1;
+    // The JSON encoded RGConfig for this RequestGroup for this plugin.
+    bytes config = 2;
+}
+
+message RequestGroupResp {
+    bytes data = 1;
+}
+
+service Worker {
+    rpc RequestGroup(stream RequestGroupReq) returns (stream RequestGroupResp) {}
+}

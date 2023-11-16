@@ -1,0 +1,148 @@
+syntax = "proto3";
+
+// Package messages defines the messages that are sent between the plugin
+// client and the plugin server.
+package stagedpipe.distrib.internal.messages;
+
+option go_package = "github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/messages/proto";
+
+// ConnType indicates the type of connection that is being made.
+enum ConnType {
+    CNTUnknown = 0;
+    // CTRequestGroup indicates that the connection is trying to create a RequestGroup.
+    CNTRequestGroup = 1;
+}
+
+// Connect is the message that is sent when a connection is made. It indicates the type
+// of connection that is being made.
+message Connect {
+    // Type is the type of connection.
+    ConnType type = 1;
+    // Version gives the plugin version information.
+    Version version = 2;
+}
+
+// MessageType indicates the type of message that is sent.
+enum MessageType {
+    // TUnknown is an unknown message type, which always indicates a bug in the code.
+    MTUnknown = 0;
+    // MTData is a data message to be fed into a pipeline.
+    MTData = 1;
+    // MTControl is a control message in a data stream.
+    MTControl = 2;
+}
+
+// Message is the message that is sent between the plugin client and the plugin server.
+// This is the top level message.
+message Message {
+    // The type of message.
+    MessageType type = 1;
+
+    // The request message if the Type is MTData.
+    Request req = 2;
+
+    // A control message in the data stream.
+    Control control = 3;
+}
+
+message Request {
+    // Data that is processed in this Request. This can be encoded in multiple ways.
+    bytes data = 1;
+
+    // 2 is reservied for future use.
+
+    // Err, if set, is an error for the Request. This type of error is for unrecoverable
+    // errors in processing, not errors for the data being processed. For example, if it
+    // can't communicate with a database or RPC service. For errors with the data itself,
+    // add the error to the underlying data type as a separate error.
+    Error error = 3;
+}
+
+// Data is the data for the message if the Type is MTData.
+message Data {
+    // The raw data for the message, which will need to be converted.
+    bytes raw = 1;
+    
+    // The ID of the connection that this message belongs to.
+    uint64 conn_id = 2;
+    
+    // The ID of the request group that this message belongs to.
+    // This is unique only within messages with the same ConnID.
+    uint64 request_group_id = 3;
+}
+
+// ControlType indicates the type of control message that is sent.
+enum ControlType {
+    // CTUnknown is an unknown control message type, which always indicates a bug in the code.
+    CTUnknown = 0;
+    
+    // CTError is an error message. This can only come from the plugin to the controller.
+    CTError = 1;
+    
+    // CTConfig is a config message. This can only come from the controller to the plugin.
+    // It contains any setup instructions that the plugin needs to know about.
+    CTConfig = 2;
+    
+    // CTCancel is a cancel message. It has no sub-message. This is used to
+    // cancel a request group processing. It can only come from a controller
+    // to the pipeline.
+    CTCancel = 3;
+
+    // CTFin is a finished message. It has no sub-message. This is used to signal
+    // the sender is done sending.
+    CTFin = 4;
+}
+
+// Control is a control message.
+message Control {
+    // Configuration information for the pipeline request group.
+    // The actual data type that should be unmarshalled will be determined by the application logic.
+    bytes config = 1;
+    
+    // An error message. This can only come from the plugin to the controller.
+    Error error = 2;
+
+    // Support details information about the controller.
+    Support support = 3;
+
+    // Type is the type of control message.
+    ControlType type = 4;
+}
+
+// Support details information about the controller.
+message Support {
+    // The version of the plugin, in semver format.
+    Version version = 1;
+}
+
+// Version details the version information of the client.
+message Version {
+    uint32 major = 1;
+    uint32 minor = 2;
+    uint32 patch = 3;
+}
+
+// ErrorCode indicates the type of error that is sent.
+enum ErrorCode {
+    // ECUnknown is an unknown error code, which always indicates a bug in the code.
+    ECUnknown = 0;
+    // ECNotAuthorized indicates that the client making the domain socket
+    // connection is not authorized to do so. It must match the GID
+    // of the domain socket file.
+    ECNotAuthorized = 1;
+    // ECInternal indicates that an internal error occurred.
+    ECInternal = 2;
+    // ECCancelled indicates that the request was cancelled by the client.
+    ECCancelled = 3;
+    // ECPipelineError indicates that an error occurred in the pipeline.
+    ECPipelineError = 4;
+}
+
+// Error is an error message.
+message Error {
+    // The error message as a string
+    string msg = 1;
+    
+    // Code is the error code.
+    ErrorCode code = 2;
+}
