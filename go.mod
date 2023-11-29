@@ -1,6 +1,6 @@
 module github.com/johnsiilver/pipelines
 
-go 1.21
+go 1.21.0
 
 toolchain go1.21.3
 
@@ -8,9 +8,11 @@ require (
 	github.com/cenkalti/backoff v2.2.1+incompatible
 	github.com/go-json-experiment/json v0.0.0-20231102232822-2e55bd4e08b0
 	github.com/google/uuid v1.3.0
+	github.com/gopherfs/fs v0.0.0-20220904165359-8e84a606fa6d
 	github.com/jackc/pgconn v1.14.1
 	github.com/jackc/pgx/v4 v4.18.1
 	github.com/jmoiron/sqlx v1.3.5
+	github.com/johnsiilver/broadcaster v0.0.0-20230826224114-0730d854f150
 	github.com/johnsiilver/dynamics v0.0.0-20230101203615-b9956702f6a2
 	github.com/johnsiilver/golib v1.2.0
 	github.com/jszwec/csvutil v1.8.0
@@ -22,6 +24,7 @@ require (
 )
 
 require (
+	github.com/derekparker/trie v0.0.0-20221221181808-1424fce0c981 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
@@ -34,7 +37,7 @@ require (
 
 require (
 	github.com/StackExchange/wmi v0.0.0-20190523213315-cbe66965904d // indirect
-	github.com/fsnotify/fsnotify v1.6.0 // indirect
+	github.com/fsnotify/fsnotify v1.6.0
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/google/btree v1.1.2 // indirect
 	github.com/google/go-cmp v0.6.0
@@ -53,7 +56,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.1.0 // indirect
 	github.com/sagikazarmark/locafero v0.3.0 // indirect
 	github.com/sagikazarmark/slog-shim v0.1.0 // indirect
-	github.com/shirou/gopsutil v3.20.12+incompatible // indirect
+	github.com/shirou/gopsutil v3.20.12+incompatible
 	github.com/sourcegraph/conc v0.3.0 // indirect
 	github.com/spf13/afero v1.10.0 // indirect
 	github.com/spf13/cast v1.5.1 // indirect

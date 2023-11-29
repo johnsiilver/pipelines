@@ -1,0 +1,136 @@
+syntax = "proto3";
+
+package stagedpipe.distrib.nodes.oversser;
+
+option go_package = "github.com/johnsiilver/pipelines/stagedpipe/distrib/nodes/overseer/proto";
+
+// CoordinatorReq requests the Overseer to get the address of a coordinator to use.
+message CoordinatorReq {}
+
+// CoordinatorResp informs the client of the address of a coordinator to use.
+message CoordinatorResp {
+    string Address = 1;
+}
+
+// SubscribeIn is used by a node to register with the Overseer and send messages. As long as the node
+// is connected and completes its registration, the Overseer considers the node alive
+// for processing.
+message SubscribeIn {
+    oneof Message {
+        RegisterReq register = 1;
+        Ack ack = 2;
+        LoadTracking load_tracking = 3;
+    }
+}
+
+// LoadTracking is used by a coordinator to tell the Overseer that it has added or removed some load.
+message LoadTracking {
+    // The amount of load you want to add or subtract.
+    int64 add = 1;
+}
+
+// Ack is used by a node to acknowledge a message from the Overseer. This is only used for
+// messages that require an acknowledgement before some other action can take place.
+message Ack {
+    // The id of the message being acknowledged.
+    uint64 id = 1;
+    // An error message, if any.
+    string err_msg = 2;
+}
+
+// SubscribeOut is used by the Overseer to send messages to a node.
+message SubscribeOut {
+    oneof Message {
+        RegisterResp register = 1;
+        UpdateWorker update_worker = 2;
+        UpdateCoordinator update_coordinator = 3;
+    }
+}
+
+// NodeType is the type of node that is registering.
+enum NodeType {
+    NT_UNKNOWN = 0;
+    NT_WORKER = 1;
+    NT_COORDINATOR = 2;
+    NT_OVERSEER = 3; // Overseer is a node type, but at this time it is not used.
+}
+
+// RegisterReq is used by a node to register with the Overseer. The process is different
+// for each node type.
+message RegisterReq {
+    oneof Message {
+        RegisterInit init = 1;
+        RegisterFin fin = 2;
+    }
+}
+
+// RegisterInit is used by a node to register with the Overseer.
+message RegisterInit {
+    // The address of the node's gRPC server.
+    string Address = 1;
+    // The type of node.
+    NodeType Type = 2;
+
+}
+
+// RegisterResp is used by the Overseer to respond to a node's registration request.
+message RegisterResp {
+    oneof Message {
+        // The Overseer sends all the plugins that the node should load, if it is a worker.
+        LoadPlugin load_plugin = 1;
+        // The Overseer sends a set of workers that a coordinator should use.
+        Workers workers = 2;
+        // This is used to tell the node that it has completed its registration.
+        RegisterFin fin = 3;
+    }
+}
+
+// Represents a worker node.
+message Worker {
+    // The address of the worker's gRPC server.
+    string address = 1;
+}
+
+// Workers is used by the Overseer to tell a coordinator which workers to use.
+message Workers {
+    repeated Worker add_workers = 1;
+}
+
+// RegisterFin is used by the Overseer to tell a node that it has completed its registration.
+message RegisterFin {}
+
+// LoadPlugin is a plugin that should be loaded by the worker node.
+message LoadPlugin {
+    // The name of the plugin binary.
+    string name = 1;
+    // The plugin binary itself.
+    bytes plugin = 2;
+}
+
+// Used by the Overseer to tell a worker to make some updates.
+message UpdateWorker {
+    uint64 id = 1;
+    
+    oneof message {
+        // Updates the plugin that the worker should load.
+        LoadPlugin plugin = 2;
+    }
+}
+
+// Used by the Overseer to tell a coordinator to make some updates.
+message UpdateCoordinator {
+    uint64 id = 1;
+    
+    oneof message {
+        // Updates the workers that the coordinator should use.
+        Workers workers = 2;
+    }
+}
+
+// Overseer is the gRPC service that coordinate nodes in the cluster.
+service Overseer {
+    // Subscriber is used by a node to register with the Overseer.
+    rpc Subscribe(stream SubscribeIn) returns (stream SubscribeOut) {}
+    // Coordinator is used by a node to get the address of a coordinator to use.
+    rpc Coordinator(CoordinatorReq) returns (CoordinatorResp) {}
+}

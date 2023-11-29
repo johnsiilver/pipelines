@@ -52,6 +52,7 @@ func (p *pluginInfo) Release() {
 	p.wg.Done()
 }
 
+// Server implements the gRPC service for the worker node.
 type Server struct {
 	mu sync.Mutex
 

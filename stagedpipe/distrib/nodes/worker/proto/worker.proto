@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package stagedpipe.distrib.nodes.worker;
 
-option go_package = "github.com/johnsiilver/pipelines/stagedpipe/distrib/nodes/workerproto";
+option go_package = "github.com/johnsiilver/pipelines/stagedpipe/distrib/nodes/worker/proto";
 
 message RequestGroupReq {
     oneof message {
