@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	stdfs "io/fs"
@@ -11,27 +12,47 @@ import (
 	"sync"
 	"time"
 
+	"github.com/johnsiilver/broadcaster"
+
 	"github.com/johnsiilver/pipelines/stagedpipe/distrib/nodes/internal/p2c"
 	pb "github.com/johnsiilver/pipelines/stagedpipe/distrib/nodes/overseer/proto"
-
-	osFS "github.com/gopherfs/fs/io/os"
 )
 
+var (
+	regSendTimeout     = 5 * time.Second
+	pluginsLoadTimeout = 5 * time.Minute
+)
+
+type plugfs interface {
+	stdfs.ReadDirFS
+	stdfs.ReadFileFS
+	stdfs.StatFS
+}
+
+/*
+handleRegWorker handles registering a Worker with the Overseer.
+
+This will get all plugins in our plugin directory and send them out to the plugin.
+It then sends a finished message.
+We then wait for a finished message from the Worker.
+We then add the new Worker to its backend pool.
+Finally, we move on to handleWorkerUpdates() to handle any plugin updates that need to
+go to the Workers.
+*/
 func (s *Server) handleRegWorker(stream pb.Overseer_SubscribeServer, init *pb.RegisterInit) error {
-	fsys, err := osFS.New()
+	addr, err := netip.ParseAddrPort(init.Address)
 	if err != nil {
-		return fmt.Errorf("failed to create os fs: %w", err)
+		return fmt.Errorf("the init message had an address(%v) that was not valid: %v", init.Address, err)
 	}
 
-	plugCh, err := getPlugins(fsys, s.pluginDir)
+	plugCh, err := getPlugins(s.plugFS, s.pluginDir)
 	if err != nil {
 		return err
 	}
 
 	for p := range plugCh {
 		if p.Err != nil {
-			log.Println("while reading plugins for a new worker: ", p.Err)
-			continue
+			return fmt.Errorf("while reading plugins for a new worker: %v", p.Err)
 		}
 		out := &pb.SubscribeOut{
 			Message: &pb.SubscribeOut_Register{
@@ -42,34 +63,34 @@ func (s *Server) handleRegWorker(stream pb.Overseer_SubscribeServer, init *pb.Re
 				},
 			},
 		}
-		ctx, cancel := context.WithTimeout(stream.Context(), 5*time.Second)
-		err := subscribeSend(ctx, stream, out)
+		ctx, cancel := context.WithTimeout(stream.Context(), regSendTimeout)
+		err = subscribeSend(ctx, stream, out)
 		cancel()
 		if err != nil {
 			return fmt.Errorf("failed to send plugin to worker during registration: %w", err)
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(stream.Context(), 5*time.Second)
-	err = subscribeSend(
-		ctx,
-		stream,
-		&pb.SubscribeOut{
-			Message: &pb.SubscribeOut_Register{
-				Register: &pb.RegisterResp{
-					Message: &pb.RegisterResp_Fin{
-						Fin: &pb.RegisterFin{},
-					},
+	// Tell the Worker that we are done with registration.
+	finMsg := &pb.SubscribeOut{
+		Message: &pb.SubscribeOut_Register{
+			Register: &pb.RegisterResp{
+				Message: &pb.RegisterResp_Fin{
+					Fin: &pb.RegisterFin{},
 				},
 			},
 		},
-	)
+	}
+
+	ctx, cancel := context.WithTimeout(stream.Context(), regSendTimeout)
+	err = subscribeSend(ctx, stream, finMsg)
 	cancel()
 	if err != nil {
 		return fmt.Errorf("failed to send fin message to worker during registration: %w", err)
 	}
 
-	ctx, cancel = context.WithTimeout(stream.Context(), 5*time.Minute)
+	// Wait for the far side to tell us it is done with starting plugins.
+	ctx, cancel = context.WithTimeout(stream.Context(), pluginsLoadTimeout)
 	defer cancel()
 	in, err := subscribeRecv(ctx, stream)
 	if err != nil {
@@ -80,7 +101,7 @@ func (s *Server) handleRegWorker(stream pb.Overseer_SubscribeServer, init *pb.Re
 		return fmt.Errorf("expected fin message from worker during registration, got %v", in)
 	}
 
-	addr := netip.MustParseAddrPort(init.Address)
+	// Register our new backend with our p2c pool.
 	b, err := p2c.NewBackend(addr)
 	if err != nil {
 		return fmt.Errorf("failed to create backend for coordinator(%s): %w", addr, err)
@@ -90,14 +111,26 @@ func (s *Server) handleRegWorker(stream pb.Overseer_SubscribeServer, init *pb.Re
 		return fmt.Errorf("failed to add worker(%s): %w", addr, err)
 	}
 
-	return s.handleWorkerUpdates(stream, b)
+	// If we are in a test, don't chain to the next function.
+	if s.inTest {
+		return nil
+	}
+	return s.handleWorkerUpdates(stream)
 }
+
+var ackTimeout = 1 * time.Minute
 
 // handleWorkerUpdates handles updates from the worker. It will block until the worker connection
 // is closed or an error occurs.
-func (s *Server) handleWorkerUpdates(stream pb.Overseer_SubscribeServer, b *p2c.Backend) error {
+func (s *Server) handleWorkerUpdates(stream pb.Overseer_SubscribeServer) error {
 	mu := sync.Mutex{}
 	acks := map[uint64]chan struct{}{}
+
+	castPlugUpdates, err := s.updateWorkers.Receiver(workerUpdatePlugs, 100)
+	if err != nil {
+		return fmt.Errorf("failed to create plugin update receiver: %w", err)
+	}
+	defer castPlugUpdates.Close()
 
 	// Handle receiving messages from the worker.
 	recvErr := make(chan error, 1)
@@ -127,57 +160,51 @@ func (s *Server) handleWorkerUpdates(stream pb.Overseer_SubscribeServer, b *p2c.
 				return
 			}
 			close(promise)
+			if in.GetAck().ErrMsg != "" {
+				recvErr <- fmt.Errorf("worker plugin update: responded with err: %s", in.GetAck().ErrMsg)
+				return
+			}
 		}
 	}()
 
-	plugUpdates, err := s.updateWorkers.Receiver(workerUpdatePlugs, 100)
-	if err != nil {
-		return fmt.Errorf("failed to create plugin update receiver: %w", err)
-	}
-	defer plugUpdates.Close()
-
 	// Handle sending messages to the worker.
 	var exitErr error
-	updatesCh := make(chan *pb.UpdateWorker, 1)
 	ackErr := make(chan error, 1)
+
+	pluginUpdates := getPluginUpdates(stream.Context(), castPlugUpdates)
 
 	for {
 		select {
 		case <-stream.Context().Done():
-			exitErr = stream.Context().Err()
-			break
+			return stream.Context().Err()
 		case exitErr = <-recvErr:
-			break
+			return exitErr
 		case exitErr = <-ackErr:
-			break
-		case update := <-func() chan *pb.UpdateWorker {
-			go func() {
-				update := plugUpdates.Next(stream.Context())
-				if update.IsZero() {
-					panic("pluginUpdates.Next() returned a zero value, which should never happen.")
-				}
-				updatesCh <- update.Data()
-			}()
-			return updatesCh
-		}():
+			return exitErr
+		case update := <-pluginUpdates:
+			if update.Err != nil {
+				return update.Err
+			}
 			out := &pb.SubscribeOut{
 				Message: &pb.SubscribeOut_UpdateWorker{
-					UpdateWorker: update,
+					UpdateWorker: update.Data,
 				},
 			}
+
+			promise := make(chan struct{}, 1)
+			mu.Lock()
+			acks[update.Data.Id] = promise
+			mu.Unlock()
+
 			go func() {
-				promise := make(chan struct{}, 1)
-				mu.Lock()
-				acks[update.Id] = promise
-				mu.Unlock()
 				select {
 				case <-stream.Context().Done():
 					return
 				case <-promise:
 					return
-				case <-time.After(1 * time.Minute):
+				case <-time.After(ackTimeout):
 					select {
-					case ackErr <- fmt.Errorf("failed to get ack for update(%d) in time allotted", update.Id):
+					case ackErr <- fmt.Errorf("failed to get ack for update(%d) in time allotted", update.Data.Id):
 					default:
 					}
 					return
@@ -186,17 +213,28 @@ func (s *Server) handleWorkerUpdates(stream pb.Overseer_SubscribeServer, b *p2c.
 			if err := stream.Send(out); err != nil {
 				return fmt.Errorf("failed to send plugin update to worker: %w", err)
 			}
-			continue
 		}
-		break
 	}
-	return exitErr
 }
 
-type plugfs interface {
-	stdfs.ReadDirFS
-	stdfs.ReadFileFS
-	stdfs.StatFS
+func getPluginUpdates(ctx context.Context, plugUpdates *broadcaster.Receiver[*pb.UpdateWorker]) chan streamResp[*pb.UpdateWorker] {
+	updatesCh := make(chan streamResp[*pb.UpdateWorker], 1)
+	go func() {
+		log.Println("waiting for updates")
+		defer close(updatesCh)
+		for {
+			update := plugUpdates.Next(ctx)
+			log.Println("got a broadcast update")
+			if update.IsZero() {
+				log.Printf("was zero: %v", update.Data())
+				updatesCh <- streamResp[*pb.UpdateWorker]{Err: errors.New("pluginUpdates.Next() returned a zero value, which should never happen")}
+				return
+			}
+			updatesCh <- streamResp[*pb.UpdateWorker]{Data: update.Data()}
+			log.Println("broadcast received")
+		}
+	}()
+	return updatesCh
 }
 
 // getPlugins streams the plugins that are located in the directory dir. An error is returned

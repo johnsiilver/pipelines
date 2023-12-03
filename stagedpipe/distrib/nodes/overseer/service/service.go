@@ -14,18 +14,18 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/johnsiilver/pipelines/stagedpipe/distrib/nodes/internal/p2c"
-	pb "github.com/johnsiilver/pipelines/stagedpipe/distrib/nodes/overseer/proto"
-	"google.golang.org/grpc/peer"
-
 	"github.com/fsnotify/fsnotify"
 	osFS "github.com/gopherfs/fs/io/os"
 	"github.com/johnsiilver/broadcaster"
+	"google.golang.org/grpc/peer"
+
+	"github.com/johnsiilver/pipelines/stagedpipe/distrib/nodes/internal/p2c"
+	pb "github.com/johnsiilver/pipelines/stagedpipe/distrib/nodes/overseer/proto"
 )
 
 var (
-	coordUpdateWorkers = []string{"coordinator", "updateWorkers"}
-	workerUpdatePlugs  = []string{"worker", "updatePlugs"}
+	coordUpdateWorkers = broadcaster.MkPath("coordinator/updateWorkers")
+	workerUpdatePlugs  = broadcaster.MkPath("worker/updatePlugs")
 )
 
 type pluginInfo struct {
@@ -72,16 +72,22 @@ type Server struct {
 	coordinators  *p2c.Selector
 	workers       *p2c.Selector
 
+	plugFS plugfs
+
 	msgID atomic.Uint64
 
 	updateCoordinator *broadcaster.Sender[*pb.Workers]
 	updateWorkers     *broadcaster.Sender[*pb.UpdateWorker]
 
+	// inTest tells the Server it is running in a test. This prevents handlers from chaining
+	// so we can test each individually.
+	inTest bool
+
 	pb.UnimplementedOverseerServer
 }
 
 // New creates a new Server. pluginDir is the directory where plugins are stored.
-func New(pluginDir string) (*Server, error) {
+func New(fsys plugfs, pluginDir string) (*Server, error) {
 	stat, err := os.Stat(pluginDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to stat plugin directory(%s): %w", pluginDir, err)
@@ -90,18 +96,12 @@ func New(pluginDir string) (*Server, error) {
 		return nil, fmt.Errorf("plugin directory(%s) is not a directory", pluginDir)
 	}
 
-	coordinators, err := p2c.New()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create coordinator selector: %w", err)
-	}
-
-	workers, err := p2c.New()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create worker selector: %w", err)
-	}
+	coordinators := p2c.New()
+	workers := p2c.New()
 
 	s := &Server{
 		pluginDir:         pluginDir,
+		plugFS:            fsys,
 		loadedPlugins:     &plugins{m: make(map[string]pluginInfo)},
 		coordinators:      coordinators,
 		workers:           workers,
@@ -235,7 +235,7 @@ func (s *Server) plugins() {
 		}
 	}()
 
-	if err := watcher.Add(s.pluginDir); err != nil {
+	if err = watcher.Add(s.pluginDir); err != nil {
 		log.Fatalf("failed to add plugin directory to watcher: %s", err)
 	}
 

@@ -77,7 +77,7 @@ type Selector struct {
 }
 
 // New creates a new Selector instance.
-func New() (*Selector, error) {
+func New() *Selector {
 	sp := &Selector{
 		rand: rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
@@ -85,7 +85,7 @@ func New() (*Selector, error) {
 	backends := []*Backend{}
 	sp.backends.Store(&backends)
 
-	return sp, nil
+	return sp
 }
 
 // Backends returns the list of backends. The returned slice SHOULD NOT BE MODIFIED.
