@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	messages "github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/messages/proto"
-
 	"github.com/go-json-experiment/json"
+
+	messages "github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/messages/proto"
 )
 
 // state is a state in the state machine.
@@ -123,7 +123,7 @@ func (s *recvMsgs[D]) Flow(ctx context.Context) (st state, err *messages.Message
 	var ok bool
 	select {
 	case <-ctx.Done():
-		e := errorf(messages.ErrorCode_ECCancelled, true, "context cancelled before receiving config message")
+		e := errorf(messages.ErrorCode_ECCancelled, true, ctx.Err().Error())
 		return nil, e
 	case msg, ok = <-s.input:
 	}

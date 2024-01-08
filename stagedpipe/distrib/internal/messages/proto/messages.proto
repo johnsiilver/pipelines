@@ -49,13 +49,15 @@ message Request {
     // Data that is processed in this Request. This can be encoded in multiple ways.
     bytes data = 1;
 
-    // 2 is reservied for future use.
-
     // Err, if set, is an error for the Request. This type of error is for unrecoverable
     // errors in processing, not errors for the data being processed. For example, if it
     // can't communicate with a database or RPC service. For errors with the data itself,
     // add the error to the underlying data type as a separate error.
-    Error error = 3;
+    Error error = 2;
+
+    // Seq is the sequence number of the message. This is used to determine the order
+    // of messages in a stream by the caller.
+    uint32 seq = 3;
 }
 
 // Data is the data for the message if the Type is MTData.

@@ -7,11 +7,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/conns"
-	messages "github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/messages/proto"
-
 	"github.com/google/go-cmp/cmp"
 	"google.golang.org/protobuf/testing/protocmp"
+
+	"github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/conns"
+	messages "github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/messages/proto"
 )
 
 type Data struct {
@@ -44,6 +44,7 @@ func TestRecvMsgs(t *testing.T) {
 		inputMsgs    []*messages.Message
 		expectedMsgs []*messages.Message
 		runErr       bool
+		expectedErr  bool
 	}{
 		{
 			desc: "Error: first message is not a control message",
@@ -183,6 +184,7 @@ func TestRecvMsgs(t *testing.T) {
 						Type: messages.ControlType_CTFin,
 					},
 				},
+				// This message will not be received because Fin closes the stream.
 				{
 					Type: messages.MessageType_MTData,
 					Req: &messages.Request{
@@ -190,7 +192,21 @@ func TestRecvMsgs(t *testing.T) {
 					},
 				},
 			},
-			runErr: true,
+			expectedMsgs: []*messages.Message{
+				{
+					Type: messages.MessageType_MTData,
+					Req: &messages.Request{
+						Data: []byte(`{"Item":1}`),
+					},
+				},
+				{
+					Type: messages.MessageType_MTData,
+					Req: &messages.Request{
+						Data: []byte(`{"Item":2}`),
+					},
+				},
+			},
+			expectedErr: true,
 		},
 		{
 			desc: "Success",
@@ -295,6 +311,9 @@ func TestRecvMsgs(t *testing.T) {
 			wg.Wait()
 
 			if len(test.expectedMsgs) != len(got) {
+				if test.expectedErr {
+					return
+				}
 				t.Fatalf("Test(%s): got len(got) == %d, want len(got) == %d", test.desc, len(got), len(test.expectedMsgs))
 			}
 

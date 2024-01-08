@@ -9,10 +9,10 @@ import (
 	"runtime/debug"
 
 	"google.golang.org/grpc"
+	"github.com/shirou/gopsutil/mem"
 
 	pb "github.com/johnsiilver/pipelines/stagedpipe/distrib/nodes/worker/proto"
 	"github.com/johnsiilver/pipelines/stagedpipe/distrib/nodes/worker/service"
-	"github.com/shirou/gopsutil/mem"
 )
 
 var (
@@ -36,7 +36,10 @@ func main() {
 
 	// If we have a memory limit, set the go runtime memory limit to the same number so
 	// we get a more aggressive GC as we approach the limit.
-	if *memoryLimit > 0 && *memoryLimit < 100 {
+	if *memoryLimit != 0 {
+		if *memoryLimit < 0 || *memoryLimit > 99 {
+			log.Fatalf("memoryLimit must be between 0 and 99")
+		}
 		mem, err := mem.VirtualMemory()
 		if err != nil {
 			log.Fatalf("failed to get memory stats: %s", err)

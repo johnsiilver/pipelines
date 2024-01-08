@@ -13,19 +13,21 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/go-json-experiment/json"
+
 	"github.com/johnsiilver/pipelines/stagedpipe"
 	"github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/conns"
 	messages "github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/messages/proto"
-
-	"github.com/go-json-experiment/json"
 )
 
 // fileConn is the path to the unix domain socket file to use for the pipeline.
 // EXCEPTION: It is almost always bad to have a flag out of package main. These
 // are an exception case.
-var fileConn = flag.String("connFile", "", "The path to the unix domain socket file to use for the pipeline.")
-var uid = flag.Int("uid", -1, "The uid to use for the unix domain socket file.")
-var gid = flag.Int("gid", -1, "The gid to use for the unix domain socket file.")
+var (
+	fileConn = flag.String("connFile", "", "The path to the unix domain socket file to use for the pipeline.")
+	uid      = flag.Int("uid", -1, "The uid to use for the unix domain socket file.")
+	gid      = flag.Int("gid", -1, "The gid to use for the unix domain socket file.")
+)
 
 // RGConfig is a generic type representing a request group config for a plugin sent from the controller.
 // D is the pipeline data type. The Config must be able to do setup for the data
@@ -247,7 +249,7 @@ func (p *Plugin[D]) processData(ctx context.Context, msg *messages.Message, mach
 		return d, nil
 	}
 	var d D
-	if err := json.Unmarshal(msg.Req.Data, &d); err != nil {
+	if err = json.Unmarshal(msg.Req.Data, &d); err != nil {
 		return d, fmt.Errorf("failed to unmarshal JSON data object: %s", err)
 	}
 

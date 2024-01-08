@@ -1,6 +1,7 @@
 package conns
 
 import (
+	"context"
 	"log"
 	"os"
 	"path"
@@ -9,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	messages "github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/messages/proto"
-
 	"github.com/johnsiilver/golib/ipc/uds"
 	stream "github.com/johnsiilver/golib/ipc/uds/highlevel/proto/stream"
 	"google.golang.org/protobuf/proto"
+
+	messages "github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/messages/proto"
 )
 
 func init() {
@@ -112,7 +113,7 @@ func TestHandleSendRecv(t *testing.T) {
 				}
 			}()
 
-			client, err := uds.NewClient(p, os.Getuid(), os.Getgid(), []os.FileMode{0770})
+			client, err := uds.NewClient(p, os.Getuid(), os.Getgid(), []os.FileMode{0o770})
 			if err != nil {
 				t.Fatalf("Test(%s): uds.NewClient() failed: %s", test.desc, err)
 			}
@@ -130,7 +131,7 @@ func TestHandleSendRecv(t *testing.T) {
 				defer wg.Done()
 				for {
 					msg := &messages.Message{}
-					if err := sc.Read(msg); err != nil {
+					if err := sc.Read(context.Background(), msg); err != nil {
 						return
 					}
 					clientGot = append(clientGot, msg)
@@ -139,7 +140,7 @@ func TestHandleSendRecv(t *testing.T) {
 
 			var writeErr error
 			for _, msg := range test.inputMsgs {
-				writeErr = sc.Write(msg)
+				writeErr = sc.Write(context.Background(), msg)
 				if writeErr != nil {
 					break
 				}

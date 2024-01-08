@@ -7,14 +7,15 @@ import (
 	"os"
 	"runtime"
 
+	"google.golang.org/protobuf/encoding/protojson"
+
 	"github.com/johnsiilver/pipelines/stagedpipe"
 	"github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/version"
 	"github.com/johnsiilver/pipelines/stagedpipe/distrib/plugin"
 	"github.com/johnsiilver/pipelines/stagedpipe/distrib/plugin/etoe/testplugin/sm"
-	"google.golang.org/protobuf/encoding/protojson"
 )
 
-var queryVersion = flag.Bool("queryVersion", false, "If true, the version of the plugin is printed and the plugin exits.")
+var queryVersion = flag.Bool("version", false, "If true, the version of the plugin is printed and the plugin exits.")
 
 var parallelism = runtime.NumCPU()
 

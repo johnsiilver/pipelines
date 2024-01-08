@@ -14,6 +14,7 @@ import (
 	"github.com/johnsiilver/golib/ipc/uds"
 	"github.com/johnsiilver/golib/ipc/uds/highlevel/chunk"
 	stream "github.com/johnsiilver/golib/ipc/uds/highlevel/proto/stream"
+
 	messages "github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/messages/proto"
 	"github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/version"
 )
@@ -65,7 +66,7 @@ func New(socketPath string, uid, gid int) (*Conns, error) {
 		return nil, err
 	}
 
-	udsServer, err := uds.NewServer(socketPath, cred.UID.Int(), cred.GID.Int(), 0770)
+	udsServer, err := uds.NewServer(socketPath, cred.UID.Int(), cred.GID.Int(), 0o770)
 	if err != nil {
 		return nil, err
 	}
@@ -96,6 +97,8 @@ func (c *Conns) Close() error {
 func (c *Conns) handleConn(cred uds.Cred, conn *uds.Conn) {
 	defer conn.Close()
 
+	ctx := context.Background()
+
 	streamer, err := stream.New(conn, stream.SharedPool(bufPool), stream.MaxSize(100*1024*1024))
 	if err != nil {
 		log.Printf("failed to create streamer: %s", err)
@@ -113,7 +116,7 @@ func (c *Conns) handleConn(cred uds.Cred, conn *uds.Conn) {
 	}
 
 	connMsg := &messages.Connect{}
-	if err := streamer.Read(connMsg); err != nil {
+	if err := streamer.Read(ctx, connMsg); err != nil {
 		log.Printf("failed to read connect message: %s", err)
 		conn.WriteTimeout(2 * time.Second)
 		sendError(streamer, errorf(messages.ErrorCode_ECInternal, true, "initial message was not a Connect message"))
@@ -122,7 +125,7 @@ func (c *Conns) handleConn(cred uds.Cred, conn *uds.Conn) {
 
 	// Send back our version.
 	connMsg.Version = version.Semantic
-	if err := streamer.Write(connMsg); err != nil {
+	if err := streamer.Write(ctx, connMsg); err != nil {
 		log.Printf("failed to write connect message: %s", err)
 		conn.WriteTimeout(2 * time.Second)
 		sendError(streamer, errorf(messages.ErrorCode_ECInternal, true, "failed to write connect message"))
@@ -146,8 +149,6 @@ func (c *Conns) handleConn(cred uds.Cred, conn *uds.Conn) {
 		return
 	}
 
-	ctx := context.Background()
-
 	// Handle receiving messages from the controller.
 	recvDone := make(chan struct{})
 	go func() {
@@ -163,13 +164,14 @@ func (c *Conns) handleConn(cred uds.Cred, conn *uds.Conn) {
 func (c *Conns) handleRecv(ctx context.Context, streamer *stream.Client, writeTo chan<- *messages.Message) {
 	for {
 		m := &messages.Message{}
-		if err := streamer.Read(m); err != nil {
+		if err := streamer.Read(ctx, m); err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
 			if errors.Is(err, io.EOF) {
 				return
 			}
+
 			e := fmt.Errorf("failed to read message from controller: %w", err)
 			writeTo <- errorf(messages.ErrorCode_ECInternal, true, e.Error())
 			return
@@ -185,7 +187,7 @@ func (c *Conns) handleSend(ctx context.Context, streamer *stream.Client, connect
 			continue
 		}
 
-		if err := streamer.Write(out); err != nil {
+		if err := streamer.Write(ctx, out); err != nil {
 			log.Println(fmt.Errorf("failed to write message to controller: %s", err))
 			connect.outputErr.Store(err)
 			return
@@ -229,5 +231,6 @@ func sendError(streamer *stream.Client, m *messages.Message) error {
 		return fmt.Errorf("message type is not control or an error message")
 	}
 
-	return streamer.Write(m)
+	ctx := context.Background()
+	return streamer.Write(ctx, m)
 }

@@ -17,15 +17,16 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/shirou/gopsutil/v3/mem"
+	"google.golang.org/protobuf/encoding/protojson"
+
+	messages "github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/messages/proto"
 	"github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/version"
 	pb "github.com/johnsiilver/pipelines/stagedpipe/distrib/nodes/worker/proto"
 	"github.com/johnsiilver/pipelines/stagedpipe/distrib/plugin/client"
-
-	messages "github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/messages/proto"
-	"github.com/shirou/gopsutil/v3/mem"
-	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // TODO(jdoak): Monitor plugins for crashes. If a plugin crashes, restart it.
@@ -47,7 +48,8 @@ func (p *pluginInfo) Name() string {
 	return filepath.Base(p.fqPath)
 }
 
-// Release decrements the WaitGroup for the plugin.
+// Release decrements the WaitGroup for the plugin. The WaitGroup is incremented
+// by getPlugin().
 func (p *pluginInfo) Release() {
 	p.wg.Done()
 }
@@ -88,6 +90,8 @@ func New(overseerAddr string, pluginPath string, memoryBlock int) (*Server, erro
 
 	entries, err := os.ReadDir(pluginPath)
 	if err != nil {
+		wd, _ := os.Getwd()
+		log.Println("working directory: ", wd)
 		return nil, fmt.Errorf("failed to read plugin directory: %w", err)
 	}
 
@@ -225,7 +229,7 @@ func (s *Server) pluginHasHash(name, sum string) bool {
 // moderateMemory watches the system memory and blocks gRPC reads if the memory usage
 // exceeds some limit.
 func (s *Server) moderateMemory() {
-	ticker := time.NewTicker(time.Second * 5)
+	ticker := time.NewTicker(time.Second * 1)
 	defer ticker.Stop()
 
 	isSet := false
@@ -259,75 +263,13 @@ func (s *Server) moderateMemory() {
 // RequestGroup is the gRPC endpoint for a client to request a new request group,
 // stream data to it and receive data from it.
 func (s *Server) RequestGroup(stream pb.Worker_RequestGroupServer) error {
-	ctx := stream.Context()
-
-	in, err := stream.Recv()
+	err := runConnServer(stream, s)
 	if err != nil {
-		return fmt.Errorf("failed to receive request: %w", err)
+		// log.Println("runConnServer returned error: ", err)
+		return err
 	}
 
-	og := in.GetOpenGroup()
-	if og == nil {
-		return fmt.Errorf("first message must be OpenGroup")
-	}
-
-	pi, err := s.getPlugin(og.Plugin)
-	if err != nil {
-		return fmt.Errorf("failed to get plugin(%s): %w", og.Plugin, err)
-	}
-	defer pi.Release()
-
-	rg, err := pi.plugin.RequestGroup(ctx, og.Config)
-	if err != nil {
-		return fmt.Errorf("failed to create request group: %w", err)
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		var err error
-		for req := range rg.Output() {
-			if err != nil {
-				continue
-			}
-			if req.Err != nil {
-				rg.Close()
-				err = req.Err
-			}
-
-			resp := &pb.RequestGroupResp{
-				Data: req.Data,
-			}
-
-			if sErr := stream.Send(resp); sErr != nil {
-				rg.Close()
-				err = fmt.Errorf("failed to send request: %w", sErr)
-			}
-		}
-		done <- err
-	}()
-
-	for {
-		s.block.Wait() // Wait for memory to be available.
-
-		in, err := stream.Recv()
-		if err != nil {
-			if err == io.EOF {
-				break
-			} else {
-				rg.Close()
-				return fmt.Errorf("failed to receive request: %w", err)
-			}
-		}
-
-		if err := rg.Submit(client.Request{Data: in.GetData()}); err != nil {
-			rg.Close()
-			return fmt.Errorf("failed to submit request: %w", err)
-		}
-	}
-	if err := rg.Close(); err != nil {
-		return fmt.Errorf("failed to close request group: %w", err)
-	}
-	return <-done
+	return nil
 }
 
 // getPlugin gets the plugin with name. It adds 1 to the WaitGroup of the plugin.
@@ -343,6 +285,217 @@ func (s *Server) getPlugin(name string) (*pluginInfo, error) {
 	pi.wg.Add(1)
 
 	return pi, nil
+}
+
+type stage func() (stage, error)
+
+// connServer is the gRPC service for a single connection.
+type connServer struct {
+	ctx         context.Context
+	coordStream pb.Worker_RequestGroupServer
+	cancel      context.CancelFunc
+	rg          *client.RequestGroup
+	server      *Server
+	recvClose   atomic.Bool
+	pi          *pluginInfo
+
+	err atomic.Value
+}
+
+func runConnServer(coordStream pb.Worker_RequestGroupServer, server *Server) error {
+	ctx, cancel := context.WithCancel(coordStream.Context())
+	c := &connServer{
+		ctx:         ctx,
+		cancel:      cancel,
+		coordStream: coordStream,
+		server:      server,
+	}
+
+	stage := c.Open
+	var err error
+	for {
+		stage, err = stage()
+		if err != nil {
+			return err
+		}
+		if stage == nil {
+			if err := c.getErr(); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
+}
+
+func (c *connServer) setErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	c.cancel()
+	c.err.CompareAndSwap(nil, err)
+	return err
+}
+
+func (c *connServer) getErr() error {
+	e := c.err.Load()
+	if e == nil {
+		return nil
+	}
+	return e.(error)
+}
+
+// Open represents the first stage of the connection. We wait for the first message
+// from the coordinator, which must be an OpenGroup message. We then create a new
+// RequestGroup with the plugin and then jump to the StreamData stage.
+func (c *connServer) Open() (stage, error) {
+	// log.Println("service: Open started")
+	c.ctx, c.cancel = context.WithCancel(c.coordStream.Context())
+
+	in, err := recvOnTimeout[*pb.RequestGroupReq](c.coordStream, 1*time.Second)
+	if err != nil {
+		err = c.setErr(fmt.Errorf("failed to receive request: %w", err))
+		// log.Println(err)
+		return nil, err
+	}
+
+	log.Println("service: received first message")
+
+	og := in.GetOpenGroup()
+	if og == nil {
+		// log.Println("service: ERROR: first message was not OpenGroup:\n", in.String())
+		return nil, c.setErr(fmt.Errorf("first message was not OpenGroup:\n%s", in.String()))
+	}
+	// log.Println("service: got OpenGroup message")
+
+	c.pi, err = c.server.getPlugin(og.Plugin)
+	if err != nil {
+		return nil, c.setErr(fmt.Errorf("failed to get plugin(%s): %w", og.Plugin, err))
+	}
+
+	// log.Println("service: loaded plugin")
+
+	c.rg, err = c.pi.plugin.RequestGroup(c.ctx, og.Config)
+	if err != nil {
+		// log.Println("failed to create request group: ", err)
+		return nil, c.setErr(fmt.Errorf("failed to create request group: %w", err))
+	}
+
+	return c.StreamData, nil
+}
+
+// StreamData represents the stage where we stream data to and from the plugin.
+func (c *connServer) StreamData() (stage, error) {
+	// log.Println("service: StreamData started")
+	// defer log.Println("service: StreamData ended")
+	defer c.pi.Release()
+	defer c.rg.Close()
+
+	errCh := make(chan error, 1)
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		// defer log.Println("service: sendToCoord done")
+		defer wg.Done()
+		defer close(errCh)
+
+		if err := c.sendToCoord(c.rg); err != nil {
+			select {
+			case <-c.ctx.Done():
+				return
+			case errCh <- err:
+			default:
+			}
+			return
+		}
+	}()
+
+	if err := c.sendToPlugin(c.rg); err != nil {
+		return nil, c.setErr(err)
+	}
+	// log.Println("service sendToPlugin done")
+
+	wg.Wait()
+	if err := <-errCh; err != nil {
+		return nil, c.setErr(err)
+	}
+	return nil, nil
+}
+
+// sendToPlugin sends data from the coordinator to the plugin.
+func (c *connServer) sendToPlugin(plugRG *client.RequestGroup) (err error) {
+	// log.Println("service: sentToPlugin started")
+	defer func() {
+		err = plugRG.Close()
+		if err != nil {
+			c.setErr(err)
+		}
+	}()
+
+	for {
+		c.server.block.Wait() // Wait for memory to be available.
+		// log.Println("service: passed block")
+		in, err := c.coordStream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				c.recvClose.Store(true)
+				return nil
+			}
+			// log.Println("received error from coordinator: ", err)
+			return fmt.Errorf("failed to receive request: %w", err)
+		}
+
+		if err := plugRG.Submit(client.Request{Data: in.GetData().Data}); err != nil {
+			// log.Println("failed to submit request to plugin: ", err)
+			return fmt.Errorf("failed to submit request to plugin: %w", err)
+		}
+		// log.Println("service: sent data to plugin")
+	}
+}
+
+// sendToCoord sends data from the plugin to the coordinator.
+func (c *connServer) sendToCoord(plugRG *client.RequestGroup) error {
+	// log.Println("service: sendToCoord started")
+
+	var req client.Request
+	var ok bool
+	for {
+		select {
+		case <-c.ctx.Done():
+			return nil
+		case req, ok = <-plugRG.Output():
+			if !ok {
+				break
+			}
+			if req.Err != nil {
+				// log.Println("plugin returned an error: ", req.Err)
+				return c.setErr(fmt.Errorf("plugin returned an error: %w", req.Err))
+			}
+
+			resp := &pb.RequestGroupResp{
+				Message: &pb.RequestGroupResp_Data{
+					Data: &pb.Data{
+						Data: req.Data,
+						Seq:  req.Seq,
+					},
+				},
+			}
+
+			if err := c.coordStream.Send(resp); err != nil {
+				// log.Println("failed to send request back to the Coordinator: ", err)
+				return c.setErr(fmt.Errorf("failed to send request back to the Coordinator: %w", err))
+			}
+			// log.Println("service: sent data to coordinator")
+		}
+		if !ok {
+			break
+		}
+	}
+
+	if !c.recvClose.Load() {
+		return fmt.Errorf("plugin closed stream, but coordinator did not")
+	}
+
+	return nil
 }
 
 // pluginVersionCheck checks the version of the plugin to ensure it is compatible with the worker node.
@@ -375,4 +528,44 @@ func hashPlugin(fqPath string) (string, error) {
 		return "", fmt.Errorf("failed to hash plugin file: %w", err)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+type streamMsg[T any] struct {
+	data T
+	err  error
+}
+
+// streamRecv is an interface that allows us to receive messages from a stream.
+type streamRecv[T any] interface {
+	Recv() (T, error)
+}
+
+// recvOnTimeout receives a message from the stream, but will timeout if it takes too long.
+func recvOnTimeout[T any](receiver streamRecv[T], timeout time.Duration) (T, error) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	// Spin off a goroutine to do the receive.
+	msg := make(chan streamMsg[T], 1)
+	go func() {
+		in, err := receiver.Recv()
+		if err != nil {
+			msg <- streamMsg[T]{err: fmt.Errorf("failed to receive request: %w", err)}
+			return
+		}
+		msg <- streamMsg[T]{data: in}
+	}()
+
+	// Now wait for either the timeout or the message.
+	select {
+	case <-timer.C:
+		var t T
+		return t, fmt.Errorf("timeout waiting for stream open message")
+	case m := <-msg:
+		if m.err != nil {
+			var t T
+			return t, m.err
+		}
+		return m.data, nil
+	}
 }

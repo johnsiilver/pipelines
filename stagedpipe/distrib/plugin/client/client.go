@@ -17,12 +17,12 @@ import (
 	"syscall"
 	"time"
 
-	messages "github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/messages/proto"
-	"github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/version"
-
 	"github.com/johnsiilver/golib/ipc/uds"
 	"github.com/johnsiilver/golib/ipc/uds/highlevel/chunk"
 	stream "github.com/johnsiilver/golib/ipc/uds/highlevel/proto/stream"
+
+	messages "github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/messages/proto"
+	"github.com/johnsiilver/pipelines/stagedpipe/distrib/internal/version"
 )
 
 var bufPool = chunk.NewPool(100)
@@ -43,7 +43,7 @@ func newConnect(socketPath string, cred uds.Cred, connMsg *messages.Connect, con
 		return nil, fmt.Errorf("unknown connection type: %v", connMsg.Type)
 	}
 
-	client, err := uds.NewClient(socketPath, cred.UID.Int(), cred.GID.Int(), []os.FileMode{0770})
+	client, err := uds.NewClient(socketPath, cred.UID.Int(), cred.GID.Int(), []os.FileMode{0o770})
 	if err != nil {
 		return nil, fmt.Errorf("had problem connecting to the plugin socket: %w", err)
 	}
@@ -58,12 +58,13 @@ func newConnect(socketPath string, cred uds.Cred, connMsg *messages.Connect, con
 		return nil, fmt.Errorf("had problem creating streamer: %w", err)
 	}
 
-	if err := streamer.Write(connMsg); err != nil {
+	ctx := context.Background()
+	if err := streamer.Write(ctx, connMsg); err != nil {
 		return nil, fmt.Errorf("failed to write connection message: %w", err)
 	}
 
 	connMsg = &messages.Connect{}
-	if err := streamer.Read(connMsg); err != nil {
+	if err := streamer.Read(ctx, connMsg); err != nil {
 		return nil, fmt.Errorf("failed to read connection message: %w", err)
 	}
 
@@ -71,7 +72,7 @@ func newConnect(socketPath string, cred uds.Cred, connMsg *messages.Connect, con
 		return nil, fmt.Errorf("plugin version %v is incompatible with controller version %v", connMsg.Version, version.Semantic)
 	}
 
-	if err := streamer.Write(configMsg); err != nil {
+	if err := streamer.Write(ctx, configMsg); err != nil {
 		return nil, fmt.Errorf("failed to write config message: %w", err)
 	}
 
@@ -91,13 +92,13 @@ func (c *connect) Close() error {
 }
 
 // Read reads a message from the plugin.
-func (c *connect) Read(msg *messages.Message) error {
-	return c.streamer.Read(msg)
+func (c *connect) Read(ctx context.Context, msg *messages.Message) error {
+	return c.streamer.Read(ctx, msg)
 }
 
 // Write writes a message to the plugin.
-func (c *connect) Write(msg *messages.Message) error {
-	return c.streamer.Write(msg)
+func (c *connect) Write(ctx context.Context, msg *messages.Message) error {
+	return c.streamer.Write(ctx, msg)
 }
 
 // Plugin represents a plugin client.
@@ -197,7 +198,6 @@ func (p *Plugin) Quit(ctx context.Context) error {
 	case <-p.exit[0]:
 		return nil
 	}
-
 }
 
 // Kill will kill the plugin process. Generally you should call Quit() unless it is not responding.
@@ -216,6 +216,8 @@ type Request struct {
 	Err error
 	// Data is the data sent to the plugin.
 	Data []byte
+	// Seq is the sequence number of the request. It is set by the caller.
+	Seq uint32
 }
 
 // RequestGroup represents a request group that is talking to the plugin.
@@ -251,7 +253,7 @@ func (r *RequestGroup) handleRecv() (err error) {
 
 	for {
 		msg := &messages.Message{}
-		if err = r.connect.Read(msg); err != nil {
+		if err = r.connect.Read(context.Background(), msg); err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				r.out <- Request{Err: fmt.Errorf("connection unexpectantly closed: %w", err)}
 				return err
@@ -281,18 +283,6 @@ func (r *RequestGroup) handleRecv() (err error) {
 	}
 }
 
-// drainMessages is used to drain messages from the plugin after we receive a fin message.
-// If count > 0, this is an error as the plugin should not send any more messages.
-func (r *RequestGroup) drainMessages() (count int) {
-	msg := &messages.Message{}
-	for {
-		if err := r.connect.Read(msg); err != nil {
-			return count
-		}
-		count++
-	}
-}
-
 // Close closes the RequestGroup. An error on close indicates there was a problem.
 func (r *RequestGroup) Close() error {
 	defer r.connect.Close()
@@ -303,7 +293,7 @@ func (r *RequestGroup) Close() error {
 			Type: messages.ControlType_CTFin,
 		},
 	}
-	if err := r.connect.Write(msg); err != nil {
+	if err := r.connect.Write(context.Background(), msg); err != nil {
 		return fmt.Errorf("failed to send fin message: %w", err)
 	}
 	log.Println("waiting for fin")
@@ -321,9 +311,10 @@ func (r *RequestGroup) Submit(req Request) error {
 		Type: messages.MessageType_MTData,
 		Req: &messages.Request{
 			Data: req.Data,
+			Seq:  req.Seq,
 		},
 	}
-	return r.connect.Write(msg)
+	return r.connect.Write(context.Background(), msg)
 }
 
 // Output returns the output channel for the RequestGroup.
@@ -331,6 +322,8 @@ func (r *RequestGroup) Output() <-chan Request {
 	return r.out
 }
 
+// RequestGroup creates a new RequestGroup to talk to the plugin. config is the configuration
+// for the plugin in bytes (interpreted by the plugin).
 func (p *Plugin) RequestGroup(ctx context.Context, config []byte) (*RequestGroup, error) {
 	connMsg := &messages.Connect{
 		Type:    messages.ConnType_CNTRequestGroup,

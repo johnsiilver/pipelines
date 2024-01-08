@@ -6,8 +6,12 @@ option go_package = "github.com/johnsiilver/pipelines/stagedpipe/distrib/nodes/w
 
 message RequestGroupReq {
     oneof message {
+        // The first message sent to the worker.  It contains the name of the plugin
+        // to open and the JSON encoded RGConfig for this RequestGroup.
         OpenGroupReq open_group = 1;
-        bytes data = 2;
+        // The data to send to the worker. Every message after the first will be
+        // data until CloseGroupReq is sent.
+        Data data = 2;
     }
 }
 
@@ -19,7 +23,14 @@ message OpenGroupReq {
 }
 
 message RequestGroupResp {
-    bytes data = 1;
+    oneof message {
+        Data data = 1;
+    }
+}
+
+message Data {
+    uint32 seq = 1;
+    bytes data = 2;
 }
 
 service Worker {

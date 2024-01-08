@@ -30,11 +30,11 @@ type Backend struct {
 }
 
 // NewBackend creates a new Backend.
-func NewBackend(address netip.AddrPort) (*Backend, error) {
+func NewBackend(address netip.AddrPort) *Backend {
 	b := &Backend{
 		address: address,
 	}
-	return b, nil
+	return b
 }
 
 // validate validates the Backend is valid.
@@ -122,11 +122,17 @@ func (s *Selector) Add(ctx context.Context, b *Backend) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// We don't have any backends, so just add this and go.
 	backends := *(s.backends.Load())
+	if len(backends) == 0 {
+		back := []*Backend{b}
+		s.backends.Store(&back)
+		return nil
+	}
 
-	i := s.findBackend(ctx, b, backends)
-	// This means the backend was found, so we don't really need to add it.
-	if i != -1 {
+	// Let's see if the backend already exists, if so, then we don't add it.
+	x := s.findBackend(ctx, b, backends)
+	if x != -1 { // -1 means not found
 		return nil
 	}
 
@@ -134,10 +140,11 @@ func (s *Selector) Add(ctx context.Context, b *Backend) error {
 	copy(newBackends, backends)
 	newBackends[len(backends)] = b
 
+	// We sort so another function can do a search on the contents.
 	sort.Slice(
 		newBackends,
 		func(i, j int) bool {
-			return backends[i].address.String() < backends[j].address.String()
+			return newBackends[i].address.String() < newBackends[j].address.String()
 		},
 	)
 	s.backends.Store(&newBackends)

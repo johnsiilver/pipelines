@@ -7,17 +7,17 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/go-json-experiment/json"
+
 	"github.com/johnsiilver/pipelines/stagedpipe/distrib/plugin/client"
 	"github.com/johnsiilver/pipelines/stagedpipe/distrib/plugin/etoe/testplugin/sm"
-
-	"github.com/go-json-experiment/json"
 )
 
 const testpluginPath = "testplugin/testplugin"
 
 // TestSuccess tests that the plugin can be created and run that has no unexpected errors.
 func TestSuccess(t *testing.T) {
-	const count = 1000
+	const count = 10000
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -67,7 +67,7 @@ func TestSuccess(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to marshal JSON data object: %s", err)
 		}
-		if err := rg.Submit(client.Request{Data: b}); err != nil {
+		if err := rg.Submit(client.Request{Data: b, Seq: uint32(i)}); err != nil {
 			t.Fatalf("failed to submit request to pipeline: %s", err)
 		}
 	}
